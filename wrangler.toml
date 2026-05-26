@@ -47,7 +47,7 @@ RATE_LIMIT_LOOKUPS_RPM = "20"
 SESSION_MAX_AGE = "28800"
 
 # TLDs to check in fuzzy finder (comma-separated)
-FUZZY_TLDS = ".com,.net,.org,.io,.co,.ai,.app,.dev,.info,.biz,.co.uk,.co.nz,.com.au,.nz"
+FUZZY_TLDS = ".com,.net,.org,.io,.co,.ai,.app,.dev,.info,.biz,.co.uk,.co.nz,.com.au"
 
 # ============================================================
 # Secrets - set via: wrangler secret put SECRET_NAME

@@ -2,7 +2,7 @@
 
 A secure, self-hosted domain monitoring tool that runs entirely on Cloudflare's free tier. It tracks domain expiry dates, sends email alerts before they expire, and scans for typosquatting / alternate TLD variants of your domains.
 
-**No servers. No subscriptions. Hosted on GitHub, runs on Cloudflare.**
+**No servers. No subscriptions. Hosted on GitHub, deployed and run by Cloudflare.**
 
 ---
 
@@ -25,7 +25,12 @@ A secure, self-hosted domain monitoring tool that runs entirely on Cloudflare's 
 ### Architecture
 
 ```
-GitHub repo → Cloudflare Workers (your domain-watch worker)
+GitHub repo (source only)
+       │
+       └── Cloudflare Git integration (auto-deploy on push)
+                     │
+                     ▼
+           Cloudflare Workers (runtime)
                      │
                      ├── Serves the SPA frontend (password-protected)
                      ├── REST API (/api/domains, /api/fuzzy, etc.)
@@ -35,6 +40,8 @@ GitHub repo → Cloudflare Workers (your domain-watch worker)
                                ├── Checks each domain via RDAP
                                └── Sends alerts via Resend / Mailgun / SendGrid
 ```
+
+GitHub is **source control only**. All building, deployment, and hosting happens inside Cloudflare's infrastructure — no GitHub Actions, no external CI tokens, no third-party runners.
 
 ### Domain expiry checking
 
@@ -55,7 +62,7 @@ For a domain like `mycompany.com`, Domain Watch generates:
 | Dropped character | `mycompan.com`, `mcompany.com` |
 | Doubled character | `myycompany.com`, `mycompanyy.com` |
 | Hyphen insert | `my-company.com` |
-| Homoglyph substitution | `myc0mpany.com` (o→0), `myc0mpany.com` |
+| Homoglyph substitution | `myc0mpany.com` (o→0) |
 
 ### Email alerts
 
@@ -88,32 +95,31 @@ All data is stored in Cloudflare KV with a simple key convention:
 
 ## Deployment
 
-There are three ways to deploy Domain Watch. All three require the same KV namespace and secrets setup — only the final deploy step differs. Choose the method that suits you best.
+Domain Watch is deployed **entirely through Cloudflare** — Cloudflare builds it, hosts it, and manages CI/CD. GitHub is used only as the source code repository that Cloudflare watches for changes.
 
-| Method | Best for | CI/CD |
-|--------|----------|-------|
-| [A — Wrangler CLI](#method-a--wrangler-cli-quickest) | Quickest first deploy, local testing | Manual |
-| [B — GitHub Actions](#method-b--github-actions-recommended) | Full CI/CD, code review workflow | Auto on push to `main` |
-| [C — Cloudflare Git integration](#method-c--cloudflare-dashboard-git-integration-no-cli-needed) | No local CLI needed, dashboard only | Auto on push to `main` |
+There are two deployment paths:
+
+| Method | Best for |
+|--------|----------|
+| [A — Wrangler CLI](#method-a--wrangler-cli) | Quick first deploy, local development |
+| [B — Cloudflare Git integration](#method-b--cloudflare-git-integration-recommended) | Production — auto-deploys on every push to `main`, no local CLI needed after setup |
 
 ---
 
-### Prerequisites (all methods)
+### Prerequisites
 
 - A [Cloudflare account](https://dash.cloudflare.com/sign-up) (free tier is sufficient)
-- A [GitHub account](https://github.com) with this repo forked or pushed
-- An account with [Resend](https://resend.com), [Mailgun](https://mailgun.com), or [SendGrid](https://sendgrid.com) (all have free tiers)
-- [Node.js 18+](https://nodejs.org/) and npm — required for Methods A and B; optional for Method C
+- A GitHub account with this repo pushed to it
+- An account with [Resend](https://resend.com), [Mailgun](https://mailgun.com), or [SendGrid](https://sendgrid.com) for email alerts (all have free tiers)
+- [Node.js 22+](https://nodejs.org/) and npm — required for Method A only
 
 ---
 
-### Shared setup — KV namespace and secrets
+### Method A — Wrangler CLI
 
-These steps are required regardless of which deploy method you choose. Methods A and B do this via the Wrangler CLI. Method C does it via the Cloudflare dashboard UI — see [Method C](#method-c--cloudflare-dashboard-git-integration-no-cli-needed) for the dashboard equivalent.
+Use this for a quick local deploy, or for the initial setup before switching to Method B.
 
-#### 1. Fork or push this repo to GitHub
-
-If you downloaded the archive, create a new GitHub repo and push:
+#### 1. Push the repo to GitHub
 
 ```bash
 git init
@@ -123,272 +129,195 @@ git remote add origin https://github.com/YOUR_USERNAME/domain-watch.git
 git push -u origin main
 ```
 
-#### 2. Install dependencies and authenticate Wrangler
+#### 2. Install dependencies and authenticate
 
 ```bash
 npm install
-wrangler login
+npx wrangler login
 ```
 
-This opens a browser to authenticate with your Cloudflare account.
+This opens a browser window to authenticate with your Cloudflare account.
 
 #### 3. Create the KV namespace
 
 ```bash
-wrangler kv:namespace create DOMAIN_WATCH_KV
+npx wrangler kv:namespace create DOMAIN_WATCH_KV
 ```
 
 The output looks like:
 
 ```
-🌀 Creating namespace with title "domain-watch-DOMAIN_WATCH_KV"
 ✅ Success!
-Add the following to your configuration file in your kv_namespaces array:
 { binding = "KV", id = "abc123def456..." }
 ```
 
-Also create a preview namespace for local development:
+Also create a preview namespace for local dev:
 
 ```bash
-wrangler kv:namespace create DOMAIN_WATCH_KV --preview
+npx wrangler kv:namespace create DOMAIN_WATCH_KV --preview
 ```
 
-Open `wrangler.toml` and replace both placeholder IDs with your real ones:
+Open `wrangler.toml` and replace the placeholder IDs:
 
 ```toml
 [[kv_namespaces]]
 binding = "KV"
-id = "YOUR_ACTUAL_KV_ID"       # from the first command
-preview_id = "YOUR_PREVIEW_KV_ID"  # from the --preview command
+id = "YOUR_ACTUAL_KV_ID"
+preview_id = "YOUR_PREVIEW_KV_ID"
 ```
 
-Commit this change:
+Commit and push:
 
 ```bash
 git add wrangler.toml && git commit -m "Add KV namespace IDs" && git push
 ```
 
-#### 4. Set required secrets
-
-Run each command and paste the value when prompted:
+#### 4. Set secrets
 
 ```bash
-# Required — the login password you'll use to access the UI
-wrangler secret put APP_PASSWORD
+# Required
+npx wrangler secret put APP_PASSWORD       # your UI login password
+npx wrangler secret put SESSION_SECRET     # random 32+ chars: openssl rand -base64 32
 
-# Required — a random 32+ character string used to sign session tokens
-# Generate one with: openssl rand -base64 32
-wrangler secret put SESSION_SECRET
-```
+# Email — set at least one provider
+npx wrangler secret put RESEND_API_KEY     # https://resend.com (recommended)
+# OR
+npx wrangler secret put MAILGUN_API_KEY
+npx wrangler secret put MAILGUN_DOMAIN     # e.g. mg.yourdomain.com
+# OR
+npx wrangler secret put SENDGRID_API_KEY
 
-Set **at least one** email provider secret (the app auto-detects whichever is present):
-
-```bash
-# Option A: Resend (https://resend.com — recommended, simplest free tier)
-wrangler secret put RESEND_API_KEY
-
-# Option B: Mailgun (https://mailgun.com)
-wrangler secret put MAILGUN_API_KEY
-wrangler secret put MAILGUN_DOMAIN   # your Mailgun sending domain, e.g. mg.yourdomain.com
-
-# Option C: SendGrid (https://sendgrid.com)
-wrangler secret put SENDGRID_API_KEY
-```
-
-Optionally set default email addresses as secrets (these can also be configured in the UI after login):
-
-```bash
-wrangler secret put EMAIL_FROM            # e.g. alerts@yourdomain.com
-wrangler secret put EMAIL_TO             # e.g. you@yourdomain.com
-wrangler secret put EMAIL_SUBJECT_PREFIX # e.g. [Domain Watch]
+# Optional defaults (can also be set in the UI after login)
+npx wrangler secret put EMAIL_FROM
+npx wrangler secret put EMAIL_TO
+npx wrangler secret put EMAIL_SUBJECT_PREFIX
 ```
 
 #### 5. Configure limits (optional)
 
-Open `wrangler.toml` and adjust any `[vars]` values to suit your needs — these control rate limits, caps, TLDs scanned, etc.:
+Edit the `[vars]` section of `wrangler.toml` before deploying:
 
 ```toml
 [vars]
-MAX_MONITORED_DOMAINS = "50"    # max domains tracked at once
-MAX_FUZZY_HISTORY = "100"       # max saved fuzzy scan results
-MAX_FUZZY_BATCH = "20"          # parallel DNS checks per fuzzy scan
+MAX_MONITORED_DOMAINS = "50"
+MAX_FUZZY_HISTORY = "100"
+MAX_FUZZY_BATCH = "20"
 DEFAULT_ALERT_THRESHOLDS = "90,60,30,14,7"
-RATE_LIMIT_RPM = "60"           # general requests per minute per IP
-RATE_LIMIT_LOOKUPS_RPM = "20"   # RDAP/DNS lookups per minute per IP
-SESSION_MAX_AGE = "28800"       # session lifetime in seconds (8 hours)
+RATE_LIMIT_RPM = "60"
+RATE_LIMIT_LOOKUPS_RPM = "20"
+SESSION_MAX_AGE = "28800"
 FUZZY_TLDS = ".com,.net,.org,.io,.co,.ai,.app,.dev,.info,.biz,.co.uk,.co.nz,.com.au"
 ```
 
----
-
-### Method A — Wrangler CLI (quickest)
-
-Once the shared setup above is complete, deploy directly from your terminal:
+#### 6. Deploy
 
 ```bash
-wrangler deploy
+npx wrangler deploy
 ```
 
-Output will confirm the URL:
-
-```
-✅ Deployed domain-watch to https://domain-watch.YOUR_SUBDOMAIN.workers.dev
-```
-
-Visit that URL, enter your `APP_PASSWORD`, and you're in. This is a one-time manual deploy — to redeploy after changes, run `wrangler deploy` again.
+Your worker is live at `https://domain-watch.YOUR_SUBDOMAIN.workers.dev`. To redeploy after any code change, run `npx wrangler deploy` again.
 
 ---
 
-### Method B — GitHub Actions (recommended)
+### Method B — Cloudflare Git integration (recommended)
 
-This sets up automatic deployment to Cloudflare every time you push to `main`. The workflow file `.github/workflows/deploy.yml` is already included in the repo.
+This connects your GitHub repo directly to Cloudflare Workers. Every push to `main` triggers an automatic build and deploy — entirely within Cloudflare's infrastructure.
 
-#### 1. Create a Cloudflare API token
+> **How it works:** Cloudflare connects to GitHub via OAuth (you authorise it once in the dashboard). When you push, Cloudflare clones your repo into its own secure build environment and deploys the Worker using your account context — already authenticated. Your Cloudflare credentials never leave Cloudflare. No GitHub Actions, no external CI tokens.
 
-1. Go to [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
-2. Click **Create Token**
-3. Select the **Edit Cloudflare Workers** template
-4. Under **Account Resources**, select your account
-5. Click **Continue to summary** → **Create Token**
-6. Copy the token — you won't see it again
-
-#### 2. Find your Cloudflare Account ID
-
-1. Log in to [dash.cloudflare.com](https://dash.cloudflare.com)
-2. Select any domain (or go to Workers & Pages)
-3. Your **Account ID** is shown in the right sidebar
-
-#### 3. Add secrets to GitHub
-
-1. Go to your GitHub repo → **Settings** → **Secrets and variables** → **Actions**
-2. Click **New repository secret** and add:
-   - Name: `CLOUDFLARE_API_TOKEN` — Value: the token from step 1
-   - Name: `CLOUDFLARE_ACCOUNT_ID` — Value: your account ID from step 2
-
-#### 4. Trigger the first deploy
-
-Push any change to `main` — even a whitespace edit — to trigger the workflow:
+#### Step 1 — Push the repo to GitHub
 
 ```bash
-git commit --allow-empty -m "Trigger initial deploy" && git push
-```
-
-Go to your GitHub repo → **Actions** tab to watch the deployment run. On success, your worker URL will appear in the Cloudflare dashboard under **Workers & Pages**.
-
-> **After this point**, any `git push` to `main` will automatically redeploy the worker within ~30 seconds.
-
----
-
-### Method C — Cloudflare Dashboard Git integration (no CLI needed)
-
-This method connects Cloudflare Workers directly to your GitHub repo via the Cloudflare dashboard — no local CLI or GitHub Actions secrets required.
-
-> **Note:** You still need to create the KV namespace and set secrets via the Cloudflare dashboard. Steps are below.
-
-#### 1. Push the repo to GitHub
-
-If not done already:
-
-```bash
-git init && git add . && git commit -m "Initial commit"
+git init
+git add .
+git commit -m "Initial commit"
 git remote add origin https://github.com/YOUR_USERNAME/domain-watch.git
 git push -u origin main
 ```
 
-#### 2. Connect GitHub to Cloudflare
+#### Step 2 — Create the KV namespace in the dashboard
+
+You need a KV namespace ID before connecting the repo, so Cloudflare can wire up storage during the first build.
 
 1. Log in to [dash.cloudflare.com](https://dash.cloudflare.com)
-2. In the left sidebar, click **Workers & Pages**
-3. Click **Create** → **Pages** → **Connect to Git**
+2. Go to **Workers & Pages** → **KV** (left sidebar, under Storage & Databases)
+3. Click **Create a namespace**, name it `DOMAIN_WATCH_KV`, click **Add**
+4. Copy the **Namespace ID** shown next to it in the list
 
-> We use **Pages** here because it supports the Git-connected build pipeline. The Worker source is built and deployed the same way.
-
-4. Click **Connect GitHub** and authorise Cloudflare to access your repositories
-5. Select your `domain-watch` repository
-6. Click **Begin setup**
-
-#### 3. Configure the build
-
-On the build settings screen:
-
-| Setting | Value |
-|---------|-------|
-| Production branch | `main` |
-| Build command | `npm run deploy` |
-| Build output directory | *(leave blank)* |
-| Root directory | *(leave blank)* |
-
-> **Important:** The build command `npm run deploy` calls `wrangler deploy` which compiles the TypeScript and pushes to Workers — this is correct for a Worker (not a static site).
-
-Click **Save and Deploy** — this will attempt a first build. It will likely fail at this point because the KV namespace and secrets aren't configured yet. That's fine — continue below.
-
-#### 4. Create the KV namespace in the dashboard
-
-1. In the Cloudflare dashboard, go to **Workers & Pages** → **KV**
-2. Click **Create a namespace**
-3. Name it `DOMAIN_WATCH_KV` and click **Add**
-4. Note the **Namespace ID** shown in the list
-
-Now bind it to your worker:
-
-1. Go to **Workers & Pages** → your `domain-watch` worker → **Settings** → **Bindings**
-2. Click **Add binding** → **KV Namespace**
-3. Set **Variable name** to `KV`
-4. Select `DOMAIN_WATCH_KV` from the dropdown
-5. Click **Save**
-
-Update `wrangler.toml` with the namespace ID and push — Cloudflare needs this in the config to wire up KV during builds:
+Now update `wrangler.toml` with the real ID and push:
 
 ```toml
 [[kv_namespaces]]
 binding = "KV"
-id = "YOUR_NAMESPACE_ID_FROM_DASHBOARD"
-preview_id = "YOUR_NAMESPACE_ID_FROM_DASHBOARD"  # same ID is fine for dashboard deploys
+id = "YOUR_NAMESPACE_ID"
+preview_id = "YOUR_NAMESPACE_ID"
 ```
 
 ```bash
 git add wrangler.toml && git commit -m "Add KV namespace ID" && git push
 ```
 
-#### 5. Set secrets in the dashboard
+#### Step 3 — Create the Worker and connect GitHub
 
-1. Go to **Workers & Pages** → your worker → **Settings** → **Variables**
-2. Under **Environment Variables**, click **Add variable** for each secret below
-3. Tick **Encrypt** for every one of them (this makes them Cloudflare secrets, not plain vars)
+1. In the Cloudflare dashboard, go to **Workers & Pages**
+2. Click **Create**
+3. Select the **Worker** tab (not Pages)
+4. Look for **"Import a repository"** or **"Deploy from a Git repository"**
 
-| Variable name | Value | Encrypt? |
-|---------------|-------|----------|
-| `APP_PASSWORD` | Your chosen login password | ✅ Yes |
-| `SESSION_SECRET` | Random 32+ char string (`openssl rand -base64 32`) | ✅ Yes |
-| `RESEND_API_KEY` | Your Resend API key (or Mailgun/SendGrid equivalent) | ✅ Yes |
-| `EMAIL_FROM` | e.g. `alerts@yourdomain.com` | ✅ Yes |
-| `EMAIL_TO` | e.g. `you@yourdomain.com` | ✅ Yes |
-| `EMAIL_SUBJECT_PREFIX` | e.g. `[Domain Watch]` | ✅ Yes |
+   > Cloudflare updates their dashboard UI periodically — the exact label may vary, but the Git-connected Worker option is always under Worker creation, not Pages.
 
-Click **Save and deploy** after adding all variables.
+5. Click **Connect to GitHub** and authorise Cloudflare to access your repositories
+6. Select your `domain-watch` repository and the `main` branch
+7. Confirm the build settings — Cloudflare will detect the `wrangler.toml` automatically
+8. Click **Save and Deploy**
 
-#### 6. Trigger a clean deploy
+The first deploy will fail because secrets are not set yet. That is expected — continue to Step 4.
 
-Go to **Workers & Pages** → your worker → **Deployments** → click **Retry deployment** on the latest entry (or push an empty commit):
+#### Step 4 — Set secrets in the dashboard
 
-```bash
-git commit --allow-empty -m "Trigger deploy after secrets" && git push
-```
+1. Go to **Workers & Pages** → **domain-watch** → **Settings** → **Variables and Secrets**
+2. Under **Secrets**, click **Add** for each entry below
 
-The build will now succeed. Your worker URL (`https://domain-watch.YOUR_SUBDOMAIN.workers.dev`) appears in the **Deployments** tab.
+| Secret name | Value |
+|-------------|-------|
+| `APP_PASSWORD` | Your chosen UI login password |
+| `SESSION_SECRET` | Random 32+ char string — generate with `openssl rand -base64 32` |
+| `RESEND_API_KEY` | Your Resend API key — **or** use Mailgun/SendGrid below |
+| `MAILGUN_API_KEY` | *(if using Mailgun)* |
+| `MAILGUN_DOMAIN` | *(if using Mailgun)* e.g. `mg.yourdomain.com` |
+| `SENDGRID_API_KEY` | *(if using SendGrid)* |
+| `EMAIL_FROM` | e.g. `alerts@yourdomain.com` |
+| `EMAIL_TO` | e.g. `you@yourdomain.com` |
+| `EMAIL_SUBJECT_PREFIX` | e.g. `[Domain Watch]` |
 
-> **After this point**, every `git push` to `main` triggers an automatic Cloudflare build and deploy — no GitHub Actions or local CLI needed.
+Secrets are encrypted at rest and never visible after saving.
+
+#### Step 5 — Bind the KV namespace
+
+1. Still in **Settings**, go to **Bindings**
+2. Click **Add** → **KV Namespace**
+3. Set **Variable name** to `KV`
+4. Select `DOMAIN_WATCH_KV` from the dropdown
+5. Click **Save**
+
+#### Step 6 — Trigger a clean deploy
+
+Go to **Workers & Pages** → **domain-watch** → **Deployments** and click **Retry deployment** on the most recent entry. With secrets and bindings now in place, the build will succeed.
+
+Your worker is live at `https://domain-watch.YOUR_SUBDOMAIN.workers.dev`.
+
+> **From this point on**, every `git push` to `main` triggers an automatic Cloudflare build and deploy — no CLI, no GitHub Actions, no tokens required.
 
 ---
 
-### Custom domain (all methods)
+### Custom domain (both methods)
 
 To serve Domain Watch from your own domain instead of `*.workers.dev`:
 
-1. Go to **Workers & Pages** → your worker → **Settings** → **Triggers** → **Custom Domains**
-2. Click **Add Custom Domain**
+1. Go to **Workers & Pages** → **domain-watch** → **Settings** → **Domains & Routes**
+2. Click **Add** → **Custom Domain**
 3. Enter your domain (e.g. `watch.yourdomain.com`)
-4. Cloudflare handles the DNS record automatically if your domain is on Cloudflare; otherwise add a CNAME manually
+4. If your domain's DNS is managed by Cloudflare, the record is created automatically. Otherwise add a `CNAME` pointing to `domain-watch.YOUR_SUBDOMAIN.workers.dev`
 
 ---
 
@@ -396,21 +325,25 @@ To serve Domain Watch from your own domain instead of `*.workers.dev`:
 
 Visit your worker URL, enter your `APP_PASSWORD`, and you're in.
 
-Go to **Settings** to configure your email from/to/subject prefix and confirm the detected email provider is correct.
+Go to **Settings** to configure email from/to/subject prefix and confirm the detected email provider is correct.
 
 ---
 
 ## Local development
 
 ```bash
-# Start local dev server (uses preview KV)
-wrangler dev
+# Create a .dev.vars file for local secrets (gitignored)
+cat > .dev.vars << EOF
+APP_PASSWORD=mypassword
+SESSION_SECRET=a-long-random-string-here-at-least-32-chars
+RESEND_API_KEY=re_xxx
+EMAIL_FROM=test@example.com
+EMAIL_TO=you@example.com
+EMAIL_SUBJECT_PREFIX=[Domain Watch Dev]
+EOF
 
-# To test with .dev.vars for secrets (create this file, it's gitignored):
-# .dev.vars
-# APP_PASSWORD=mypassword
-# SESSION_SECRET=a-long-random-string-here
-# RESEND_API_KEY=re_xxx
+# Start local dev server (uses preview KV)
+npx wrangler dev
 ```
 
 ---
