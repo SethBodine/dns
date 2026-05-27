@@ -310,8 +310,14 @@ label{display:block;font-size:12px;font-weight:500;color:var(--text-muted);margi
       <div class="settings-section">
         <div class="settings-section-title">Email provider</div>
         <div id="providerInfo"></div>
+        <div class="field" style="margin-top:12px">
+          <label for="providerSelect">Active provider</label>
+          <select id="providerSelect">
+            <option value="">Loading...</option>
+          </select>
+        </div>
         <div style="font-size:12px;color:var(--text-muted);margin-top:4px">
-          Provider is auto-detected from whichever API key secret is set (RESEND_API_KEY, MAILGUN_API_KEY, or SENDGRID_API_KEY).
+          Providers are auto-detected from secrets set in Cloudflare (RESEND_API_KEY, MAILGUN_API_KEY, SENDGRID_API_KEY). Select which one to use for alerts.
         </div>
       </div>
 

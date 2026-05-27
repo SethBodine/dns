@@ -34,8 +34,8 @@ export interface MonitoredDomain {
   expiresAt: string | null;
   registrar: string | null;
   lastChecked: string | null;
-  alertThresholds: number[]; // days before expiry to alert
-  alertsSent: number[];      // thresholds already alerted
+  alertThresholds: number[];
+  alertsSent: number[];
   notes: string;
 }
 
@@ -49,7 +49,7 @@ export interface FuzzyScanResult {
 export interface FuzzyVariant {
   domain: string;
   type: "tld" | "typo-swap" | "typo-drop" | "typo-double" | "typo-hyphen" | "typo-homoglyph";
-  registered: boolean | null; // null = unknown/error
+  registered: boolean | null;
 }
 
 export interface AlertLog {
@@ -66,7 +66,7 @@ export interface AppSettings {
   emailFrom: string;
   emailTo: string;
   emailSubjectPrefix: string;
-  emailProvider: string; // auto-detected but stored after first detection
+  emailProvider: string;
 }
 
 export interface RateLimitEntry {
