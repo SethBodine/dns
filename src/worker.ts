@@ -356,13 +356,13 @@ async function handleRunFuzzyScan(request: Request, env: Env, ip: string): Promi
   if (!await checkRateLimit(env, ip, "lookup")) return errorResponse("Lookup rate limit exceeded", 429);
 
   const tlds = (env.FUZZY_TLDS || ".com,.net,.org,.io,.co,.ai,.app,.dev,.info,.biz").split(",").map((t) => t.trim());
-  const maxBatch = Math.min(parseInt(env.MAX_FUZZY_BATCH || "10", 10), 10);
+  const maxBatch = Math.min(parseInt(env.MAX_FUZZY_BATCH || "6", 10), 6);
 
   const variants = generateFuzzyVariants(domain, tlds).slice(0, 120);
 
   const results: FuzzyVariant[] = [];
   for (let i = 0; i < variants.length; i += maxBatch) {
-    if (i > 0) await new Promise((r) => setTimeout(r, 250));
+    if (i > 0) await new Promise((r) => setTimeout(r, 400));
     const batch = variants.slice(i, i + maxBatch);
     const checks = await Promise.all(
       batch.map(async (v) => ({ ...v, registered: await checkDomainExists(v.domain) }))
@@ -411,14 +411,22 @@ async function handleRescanUnknowns(env: Env, id: string, ip: string): Promise<R
 
 async function handleGetSettings(env: Env): Promise<Response> {
   const stored = await getSettings(env);
-  const allProviders = detectAllProviders(env);
+  const availableProviders = detectAllProviders(env);
+  const allPossibleProviders = ["resend", "mailgun", "sendgrid"];
   const preferred = stored.emailProvider || "";
+  const activeProvider = detectEmailProvider(env, preferred);
+  // Return all three providers with configured flag so UI can show green/grey dots
+  const providerStatus = allPossibleProviders.map(p => ({
+    id: p,
+    configured: availableProviders.includes(p as "resend" | "mailgun" | "sendgrid"),
+  }));
   return jsonResponse({
     emailFrom: stored.emailFrom || env.EMAIL_FROM || "",
     emailTo: stored.emailTo || env.EMAIL_TO || "",
     emailSubjectPrefix: stored.emailSubjectPrefix || env.EMAIL_SUBJECT_PREFIX || "[Domain Watch]",
-    emailProvider: detectEmailProvider(env, preferred),
-    availableProviders: allProviders,
+    emailProvider: activeProvider,
+    availableProviders,
+    providerStatus,
     // Limits
     maxMonitoredDomains: env.MAX_MONITORED_DOMAINS || "50",
     maxFuzzyHistory: env.MAX_FUZZY_HISTORY || "100",
