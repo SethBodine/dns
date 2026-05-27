@@ -1,74 +1,140 @@
 import type { MonitoredDomain, FuzzyVariant } from "./types";
 
 // ─── RDAP - Domain Expiry Lookup ─────────────────────────────────────────────
+// Uses multiple RDAP endpoints with fallback for reliability
 
-const RDAP_BOOTSTRAP = "https://rdap.org/domain/";
+const RDAP_ENDPOINTS = [
+  "https://rdap.org/domain/",
+  "https://rdap.iana.org/domain/",
+];
 
 interface RdapResponse {
   events?: Array<{ eventAction: string; eventDate: string }>;
-  entities?: Array<{ roles: string[]; vcardArray?: unknown[] }>;
+  entities?: Array<{ roles: string[]; vcardArray?: unknown[]; handle?: string }>;
+  nameservers?: Array<{ ldhName: string }>;
+}
+
+async function tryRdapEndpoint(endpoint: string, domain: string): Promise<RdapResponse | null> {
+  try {
+    const res = await fetch(`${endpoint}${encodeURIComponent(domain)}`, {
+      headers: {
+        Accept: "application/rdap+json,application/json",
+        "User-Agent": "domain-watch/1.0",
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return null;
+    return await res.json() as RdapResponse;
+  } catch {
+    return null;
+  }
 }
 
 export async function lookupDomainExpiry(domain: string): Promise<{
   expiresAt: string | null;
   registrar: string | null;
 }> {
-  try {
-    const res = await fetch(`${RDAP_BOOTSTRAP}${encodeURIComponent(domain)}`, {
-      headers: { Accept: "application/rdap+json" },
-      signal: AbortSignal.timeout(8000),
-    });
+  let data: RdapResponse | null = null;
 
-    if (!res.ok) return { expiresAt: null, registrar: null };
-
-    const data = await res.json() as RdapResponse;
-
-    const expiryEvent = data.events?.find(
-      (e) => e.eventAction === "expiration"
-    );
-    const expiresAt = expiryEvent?.eventDate ?? null;
-
-    // Try to extract registrar name from entities
-    const registrarEntity = data.entities?.find(
-      (e) => e.roles?.includes("registrar")
-    );
-    let registrar: string | null = null;
-    if (registrarEntity?.vcardArray) {
-      const vcard = registrarEntity.vcardArray as unknown[][];
-      const fnEntry = vcard[1]?.find?.((v: unknown) => Array.isArray(v) && v[0] === "fn");
-      if (Array.isArray(fnEntry)) registrar = String(fnEntry[3] ?? "");
-    }
-
-    return { expiresAt, registrar };
-  } catch {
-    return { expiresAt: null, registrar: null };
+  // Try primary, then fallback
+  for (const endpoint of RDAP_ENDPOINTS) {
+    data = await tryRdapEndpoint(endpoint, domain);
+    if (data?.events) break;
   }
+
+  if (!data) return { expiresAt: null, registrar: null };
+
+  // Find expiry — RDAP uses "expiration" but some registries use "expires"
+  const expiryEvent = data.events?.find(
+    (e) => e.eventAction === "expiration" || e.eventAction === "expires"
+  );
+  const expiresAt = expiryEvent?.eventDate ?? null;
+
+  // Extract registrar name from entities
+  let registrar: string | null = null;
+  const registrarEntity = data.entities?.find((e) => e.roles?.includes("registrar"));
+  if (registrarEntity?.vcardArray) {
+    try {
+      const vcard = registrarEntity.vcardArray as unknown[][];
+      // vcard[1] is the array of properties
+      const props = Array.isArray(vcard[1]) ? vcard[1] : [];
+      const fnEntry = props.find((v: unknown) => Array.isArray(v) && (v as unknown[])[0] === "fn");
+      if (Array.isArray(fnEntry) && fnEntry[3]) registrar = String(fnEntry[3]);
+    } catch { /* ignore parse errors */ }
+  }
+  // Fallback: use handle if no name found
+  if (!registrar && registrarEntity?.handle) registrar = registrarEntity.handle;
+
+  return { expiresAt, registrar };
 }
 
 // ─── DNS Existence Check (for fuzzy finder) ──────────────────────────────────
 
 const DOH_URL = "https://cloudflare-dns.com/dns-query";
 
-export async function isDomainRegistered(domain: string): Promise<boolean | null> {
+// Check with retries and a slightly longer timeout to reduce unknowns
+export async function isDomainRegistered(domain: string, retries = 1): Promise<boolean | null> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const url = new URL(DOH_URL);
+      url.searchParams.set("name", domain);
+      url.searchParams.set("type", "A");
+
+      const res = await fetch(url.toString(), {
+        headers: { Accept: "application/dns-json" },
+        signal: AbortSignal.timeout(7000),
+      });
+
+      if (!res.ok) continue;
+      const data = await res.json() as { Status: number };
+      // Status 0 = NOERROR (exists), 3 = NXDOMAIN (not registered)
+      if (data.Status === 0) return true;
+      if (data.Status === 3) return false;
+      // Other statuses (SERVFAIL etc) — retry
+    } catch {
+      if (attempt < retries) await sleep(500);
+    }
+  }
+  return null;
+}
+
+// Also check NS records — a domain can be registered without an A record
+export async function isDomainRegisteredNS(domain: string): Promise<boolean | null> {
   try {
     const url = new URL(DOH_URL);
     url.searchParams.set("name", domain);
-    url.searchParams.set("type", "A");
+    url.searchParams.set("type", "NS");
 
     const res = await fetch(url.toString(), {
       headers: { Accept: "application/dns-json" },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(7000),
     });
 
     if (!res.ok) return null;
-    const data = await res.json() as { Status: number };
-    // Status 0 = NOERROR (found), 3 = NXDOMAIN (not found)
-    if (data.Status === 0) return true;
+    const data = await res.json() as { Status: number; Answer?: unknown[] };
+    if (data.Status === 0 && data.Answer && data.Answer.length > 0) return true;
     if (data.Status === 3) return false;
     return null;
   } catch {
     return null;
   }
+}
+
+// Combined check: domain registered if A or NS records found
+export async function checkDomainExists(domain: string): Promise<boolean | null> {
+  const [a, ns] = await Promise.all([
+    isDomainRegistered(domain, 1),
+    isDomainRegisteredNS(domain),
+  ]);
+  if (a === true || ns === true) return true;
+  if (a === false && ns === false) return false;
+  // If one says false and other unknown, trust the false
+  if (a === false || ns === false) return false;
+  return null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 // ─── Fuzzy Variant Generation ────────────────────────────────────────────────
@@ -85,17 +151,24 @@ const ADJACENT_KEYS: Record<string, string> = {
 };
 
 export function generateFuzzyVariants(domain: string, tlds: string[]): Omit<FuzzyVariant, "registered">[] {
-  const [label, ...tldParts] = domain.split(".");
-  const baseTld = "." + tldParts.join(".");
+  const dotIdx = domain.indexOf(".");
+  if (dotIdx === -1) return [];
+  const label = domain.slice(0, dotIdx);
+  const baseTld = domain.slice(dotIdx); // includes the dot
+
   const variants: Map<string, Omit<FuzzyVariant, "registered">> = new Map();
 
   const add = (d: string, type: FuzzyVariant["type"]) => {
-    if (d !== domain && !variants.has(d)) variants.set(d, { domain: d, type });
+    const clean = d.toLowerCase();
+    if (clean !== domain && !variants.has(clean) && clean.length > 3) {
+      variants.set(clean, { domain: clean, type });
+    }
   };
 
   // TLD variants
   for (const tld of tlds) {
-    if (tld !== baseTld) add(`${label}${tld}`, "tld");
+    const normalised = tld.startsWith(".") ? tld : `.${tld}`;
+    if (normalised !== baseTld) add(`${label}${normalised}`, "tld");
   }
 
   // Character swap (adjacent keys)
@@ -109,7 +182,7 @@ export function generateFuzzyVariants(domain: string, tlds: string[]): Omit<Fuzz
 
   // Dropped character
   for (let i = 0; i < label.length; i++) {
-    if (label.length > 2) {
+    if (label.length > 3) {
       add(`${label.slice(0, i)}${label.slice(i + 1)}${baseTld}`, "typo-drop");
     }
   }
@@ -120,7 +193,7 @@ export function generateFuzzyVariants(domain: string, tlds: string[]): Omit<Fuzz
   }
 
   // Hyphen insert
-  for (let i = 1; i < label.length; i++) {
+  for (let i = 1; i < label.length - 1; i++) {
     add(`${label.slice(0, i)}-${label.slice(i)}${baseTld}`, "typo-hyphen");
   }
 

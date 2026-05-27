@@ -5,7 +5,7 @@ import {
   jsonResponse, errorResponse, checkCsrf, generateCsrfToken,
   validateDomain, sanitizeText, parseJsonBody,
 } from "./security";
-import { lookupDomainExpiry, isDomainRegistered, generateFuzzyVariants, daysUntilExpiry, shouldAlert } from "./lookup";
+import { lookupDomainExpiry, checkDomainExists, generateFuzzyVariants, daysUntilExpiry, shouldAlert } from "./lookup";
 import { sendEmail, getEmailSettings, detectEmailProvider, buildExpiryEmail } from "./email";
 import {
   getAllDomains, getDomain, saveDomain, deleteDomain, deleteDomains,
@@ -113,6 +113,9 @@ export default {
     }
     if (path === "/api/settings" && method === "PUT") {
       return handleSaveSettings(request, env);
+    }
+    if (path === "/api/settings/test-email" && method === "POST") {
+      return handleTestEmail(env);
     }
 
     return new Response("Not found", { status: 404, headers: secureHeaders() });
@@ -410,16 +413,18 @@ async function handleRunFuzzyScan(request: Request, env: Env, ip: string): Promi
   if (!lookupOk) return errorResponse("Lookup rate limit exceeded", 429);
 
   const tlds = (env.FUZZY_TLDS || ".com,.net,.org,.io,.co,.ai,.app,.dev,.info,.biz").split(",").map((t) => t.trim());
-  const maxBatch = parseInt(env.MAX_FUZZY_BATCH || "20", 10);
+  // Smaller batches with a pause between them to avoid DNS rate limiting
+  const maxBatch = Math.min(parseInt(env.MAX_FUZZY_BATCH || "20", 10), 10);
 
-  const variants = generateFuzzyVariants(domain, tlds).slice(0, 100);
+  const variants = generateFuzzyVariants(domain, tlds).slice(0, 120);
 
-  // Check DNS in parallel batches
+  // Check DNS in parallel batches with 200ms pause between batches
   const results: FuzzyVariant[] = [];
   for (let i = 0; i < variants.length; i += maxBatch) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 200));
     const batch = variants.slice(i, i + maxBatch);
     const checks = await Promise.all(
-      batch.map(async (v) => ({ ...v, registered: await isDomainRegistered(v.domain) }))
+      batch.map(async (v) => ({ ...v, registered: await checkDomainExists(v.domain) }))
     );
     results.push(...checks);
   }
@@ -433,6 +438,27 @@ async function handleRunFuzzyScan(request: Request, env: Env, ip: string): Promi
 
   await saveFuzzyScan(env, scan);
   return jsonResponse(scan, 201);
+}
+
+async function handleTestEmail(env: Env): Promise<Response> {
+  const provider = detectEmailProvider(env);
+  if (provider === "none") {
+    return errorResponse("No email provider configured. Set RESEND_API_KEY, MAILGUN_API_KEY, or SENDGRID_API_KEY.", 400);
+  }
+  const settings = await getEmailSettings(env);
+  if (!settings.emailTo) {
+    return errorResponse("No recipient address configured. Set EMAIL_TO in Settings.", 400);
+  }
+  const success = await sendEmail({
+    to: settings.emailTo,
+    from: settings.emailFrom,
+    subject: `${settings.emailSubjectPrefix} Test email`,
+    html: `<p>This is a test email from <strong>Domain Watch</strong>.</p><p>If you received this, your email configuration is working correctly via <strong>${provider}</strong>.</p>`,
+    text: `Domain Watch test email. If you received this, your email configuration is working correctly via ${provider}.`,
+  }, env);
+
+  if (success) return jsonResponse({ ok: true, provider });
+  return errorResponse(`Email send failed via ${provider}. Check your API key and sending domain.`, 500);
 }
 
 async function handleGetSettings(env: Env): Promise<Response> {
