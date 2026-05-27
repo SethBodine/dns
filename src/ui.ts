@@ -485,6 +485,10 @@ function renderDomains() {
   list.innerHTML = sorted.map(d => domainCard(d)).join('');
 }
 
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 function domainCard(d) {
   const days = d.expiresAt ? daysLeft(d.expiresAt) : null;
   const isExpired = days !== null && days <= 0;
@@ -492,6 +496,7 @@ function domainCard(d) {
   const iconClass = isExpired ? 'icon-red' : isExpiring ? 'icon-amber' : 'icon-green';
   const cardStatus = isExpired ? 'status-expired' : isExpiring ? 'status-expiring' : '';
   const isSelected = selectedDomainIds.has(d.id);
+  const id = d.id;
 
   let badge = '';
   if (days === null) badge = '<span class="badge badge-gray">Expiry unknown</span>';
@@ -502,55 +507,78 @@ function domainCard(d) {
 
   const expiry = d.expiresAt
     ? new Date(d.expiresAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})
-    : 'Expiry date unavailable — click refresh to retry';
-  const registrar = d.registrar ? ' &middot; ' + escHtml(d.registrar) : '';
+    : 'Expiry date unavailable \u2014 click refresh to retry';
+  const registrarHtml = d.registrar ? ' &middot; ' + esc(d.registrar) : '';
   const lastChecked = d.lastChecked
-    ? 'Checked ' + new Date(d.lastChecked).toLocaleDateString('en-GB',{day:'numeric',month:'short'})
+    ? ' &middot; Checked ' + new Date(d.lastChecked).toLocaleDateString('en-GB',{day:'numeric',month:'short'})
     : '';
 
-  // Threshold pills for inline editor
   const allThresholds = [90,60,30,14,7];
   const pills = allThresholds.map(t =>
-    '<button class="threshold-pill ' + (d.alertThresholds.includes(t)?'selected':'') + '" data-days="' + t + '" type="button">' + t + 'd</button>'
+    '<button class="threshold-pill' + (d.alertThresholds.includes(t)?' selected':'') +
+    '" data-days="' + t + '" type="button">' + t + 'd</button>'
   ).join('');
 
-  return '<div class="domain-card ' + cardStatus + (isSelected?' selected':'') + '" id="dc-' + d.id + '">' +
-    '<input type="checkbox" class="domain-checkbox" ' + (isSelected?'checked':'') + ' onchange="toggleDomainSelect(\'' + d.id + '\',this.checked)" title="Select">' +
-    '<div class="domain-icon ' + iconClass + '">&#x1F310;</div>' +
-    '<div class="domain-body">' +
-      '<div class="domain-name" title="' + escHtml(d.domain) + '">' + escHtml(d.domain) + '</div>' +
-      '<div class="domain-meta">' + (d.expiresAt ? 'Expires ' + expiry : expiry) + registrar + (lastChecked ? ' &middot; ' + lastChecked : '') + '</div>' +
-      '<div class="domain-thresholds">' +
-        '<span class="threshold-label">Alert at:</span>' +
-        badge +
-        '<button class="btn btn-sm" style="font-size:11px;padding:3px 8px" onclick="toggleThresholdEditor(\'' + d.id + '\')" type="button">Edit alerts</button>' +
-      '</div>' +
-      '<div class="threshold-editor" id="te-' + d.id + '">' +
-        '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">Alert when domain expires within:</div>' +
-        '<div class="threshold-pills" id="tp-' + d.id + '">' + pills + '</div>' +
-        '<div style="margin-top:8px;display:flex;gap:6px">' +
-          '<button class="btn btn-sm btn-primary" onclick="saveThresholds(\'' + d.id + '\')" type="button">Save</button>' +
-          '<button class="btn btn-sm" onclick="toggleThresholdEditor(\'' + d.id + '\')" type="button">Cancel</button>' +
-        '</div>' +
-      '</div>' +
-    '</div>' +
-    '<div class="domain-actions">' +
-      badge +
-      '<button class="btn-icon" title="Refresh RDAP data" onclick="refreshDomain(\'' + d.id + '\')" type="button">&#x21BB;</button>' +
-      '<button class="btn-icon" title="Quick fuzzy scan" onclick="quickFuzzyScan(\'' + escHtml(d.domain) + '\')" type="button">&#x1F50D;</button>' +
-      '<button class="btn-icon" title="Delete" onclick="deleteDomain(\'' + d.id + '\')" type="button">&#x1F5D1;</button>' +
-    '</div>' +
-  '</div>';
+  // All user-supplied data is in data-* attributes only — no interpolation inside event handler strings
+  return [
+    '<div class="domain-card ' + cardStatus + (isSelected?' selected':'') + '" id="dc-' + id + '" data-id="' + id + '">',
+      '<input type="checkbox" class="domain-checkbox" ' + (isSelected?'checked':'') + ' data-action="select" data-id="' + id + '" title="Select">',
+      '<div class="domain-icon ' + iconClass + '">&#x1F310;</div>',
+      '<div class="domain-body">',
+        '<div class="domain-name">' + esc(d.domain) + '</div>',
+        '<div class="domain-meta">' + (d.expiresAt ? 'Expires ' + expiry : expiry) + registrarHtml + lastChecked + '</div>',
+        '<div class="domain-thresholds">',
+          '<span class="threshold-label">Alert at:</span>',
+          badge,
+          '<button class="btn btn-sm" style="font-size:11px;padding:3px 8px" data-action="edit-thresholds" data-id="' + id + '" type="button">Edit alerts</button>',
+        '</div>',
+        '<div class="threshold-editor" id="te-' + id + '">',
+          '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">Alert when domain expires within:</div>',
+          '<div class="threshold-pills" id="tp-' + id + '">' + pills + '</div>',
+          '<div style="margin-top:8px;display:flex;gap:6px">',
+            '<button class="btn btn-sm btn-primary" data-action="save-thresholds" data-id="' + id + '" type="button">Save</button>',
+            '<button class="btn btn-sm" data-action="cancel-thresholds" data-id="' + id + '" type="button">Cancel</button>',
+          '</div>',
+        '</div>',
+      '</div>',
+      '<div class="domain-actions">',
+        badge,
+        '<button class="btn-icon" title="Refresh RDAP data" data-action="refresh" data-id="' + id + '" type="button">&#x21BB;</button>',
+        '<button class="btn-icon" title="Fuzzy scan" data-action="fuzzy" data-id="' + id + '" type="button">&#x1F50D;</button>',
+        '<button class="btn-icon" title="Delete" data-action="delete" data-id="' + id + '" type="button">&#x1F5D1;</button>',
+      '</div>',
+    '</div>'
+  ].join('');
 }
 
-function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
-
-function toggleThresholdEditor(id) {
-  const el = document.getElementById('te-' + id);
-  if (el) el.classList.toggle('open');
-}
+// Event delegation for all domain card actions — avoids any user data in onclick strings
+document.addEventListener('click', function(e) {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  const id = btn.dataset.id;
+  if (action === 'select') {
+    toggleDomainSelect(id, btn.checked);
+  } else if (action === 'edit-thresholds') {
+    const el = document.getElementById('te-' + id);
+    if (el) el.classList.toggle('open');
+  } else if (action === 'cancel-thresholds') {
+    const el = document.getElementById('te-' + id);
+    if (el) el.classList.remove('open');
+  } else if (action === 'save-thresholds') {
+    saveThresholds(id);
+  } else if (action === 'refresh') {
+    refreshDomain(id, btn);
+  } else if (action === 'fuzzy') {
+    const domain = allDomains.find(d => d.id === id);
+    if (domain) quickFuzzyScan(domain.domain);
+  } else if (action === 'delete') {
+    deleteDomain(id);
+  } else if (action === 'rescan') {
+    const domain = btn.dataset.domain;
+    if (domain) { document.getElementById('fuzzyInput').value = domain; runFuzzyScan(); }
+  }
+});
 
 async function saveThresholds(id) {
   const thresholds = getSelectedThresholds('tp-' + id);
@@ -651,9 +679,8 @@ async function bulkDeleteDomains() {
   } catch(e) { toast(e.message, 'error'); }
 }
 
-async function refreshDomain(id) {
-  const btn = event.target;
-  btn.disabled = true;
+async function refreshDomain(id, btn) {
+  if (btn) btn.disabled = true;
   try {
     const updated = await api('POST', '/api/domains/'+id+'/refresh');
     if (!updated) return;
@@ -724,22 +751,18 @@ function renderFuzzyHistory() {
     const date = new Date(s.scannedAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
     return '<div class="scan-item" onclick="showFuzzyScan(\'' + s.id + '\')">' +
       '<span>&#x1F50D;</span>' +
-      '<span class="scan-domain">' + escHtml(s.baseDomain) + '</span>' +
+      '<span class="scan-domain">' + esc(s.baseDomain) + '</span>' +
       '<span class="badge badge-red" style="font-size:11px">' + reg + ' taken</span>' +
       '<span class="badge badge-green" style="font-size:11px">' + avail + ' free</span>' +
       (unk ? '<span class="badge badge-gray" style="font-size:11px">' + unk + ' unknown</span>' : '') +
       '<span class="scan-meta">' + date + '</span>' +
-      '<button class="btn-icon btn-sm" title="Rescan this domain" onclick="rescanDomain(event,\'' + escHtml(s.baseDomain) + '\')" type="button">&#x21BB;</button>' +
+      '<button class="btn-icon btn-sm" title="Rescan this domain" data-action="rescan" data-domain="' + esc(s.baseDomain) + '" type="button">&#x21BB;</button>' +
       '<button class="btn-icon btn-sm" title="Delete scan" onclick="deleteScan(event,\'' + s.id + '\')" type="button">&#x1F5D1;</button>' +
     '</div>';
   }).join('');
 }
 
-function rescanDomain(e, domain) {
-  e.stopPropagation();
-  document.getElementById('fuzzyInput').value = domain;
-  runFuzzyScan();
-}
+
 
 async function deleteScan(e, id) {
   e.stopPropagation();
@@ -775,7 +798,7 @@ async function runFuzzyScan() {
   document.getElementById('fuzzyResults').innerHTML =
     '<div style="text-align:center;padding:40px;color:var(--text-muted)">' +
     '<div class="spinner spinner-dark" style="width:24px;height:24px;margin:0 auto 14px"></div>' +
-    '<p style="font-size:13px">Scanning DNS for variants of <strong>' + escHtml(domain) + '</strong></p>' +
+    '<p style="font-size:13px">Scanning DNS for variants of <strong>' + esc(domain) + '</strong></p>' +
     '<p style="font-size:12px;margin-top:6px;color:var(--text-hint)">Checking TLDs and typo variants — may take 15-30 seconds...</p>' +
     '</div>';
   try {
@@ -806,7 +829,7 @@ function renderFuzzyResults(scan) {
 
   const renderGroup = (items, cls) => items.map(v =>
     '<div class="fuzzy-item ' + cls + '">' +
-    '<div class="fi-top"><span class="fi-name" title="' + escHtml(v.domain) + '">' + escHtml(v.domain) + '</span>' +
+    '<div class="fi-top"><span class="fi-name" title="' + esc(v.domain) + '">' + esc(v.domain) + '</span>' +
     '<span class="dot ' + (cls==='registered'?'dot-red':cls==='available'?'dot-green':'dot-gray') + '"></span></div>' +
     '<div class="fi-tags"><span class="fi-tag ' + (v.type==='tld'?'tag-tld':'tag-typo') + '">' + typeLabel(v.type) + '</span></div>' +
     '</div>'
@@ -816,14 +839,14 @@ function renderFuzzyResults(scan) {
     '<div class="card">' +
     '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">' +
       '<div>' +
-        '<span style="font-size:15px;font-weight:600">' + escHtml(scan.baseDomain) + '</span>' +
+        '<span style="font-size:15px;font-weight:600">' + esc(scan.baseDomain) + '</span>' +
         '<span style="font-size:12px;color:var(--text-muted);margin-left:10px">scanned ' + date + '</span>' +
       '</div>' +
       '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
         '<span class="badge badge-red">' + registered.length + ' taken</span>' +
         '<span class="badge badge-green">' + available.length + ' free</span>' +
         (unknown.length ? '<span class="badge badge-gray">' + unknown.length + ' unknown</span>' : '') +
-        '<button class="btn btn-sm" onclick="rescanDomain(event,\'' + escHtml(scan.baseDomain) + '\')" type="button">&#x21BB; Rescan</button>' +
+        '<button class="btn btn-sm" data-action="rescan" data-domain="' + esc(scan.baseDomain) + '" type="button">&#x21BB; Rescan</button>' +
       '</div>' +
     '</div>' +
     (registered.length ? '<div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.06em">Registered (taken)</div><div class="fuzzy-grid">' + renderGroup(registered,'registered') + '</div>' : '') +
@@ -855,8 +878,8 @@ async function loadAlerts() {
       return '<div class="alert-item">' +
         '<div class="alert-icon">' + icon + '</div>' +
         '<div class="alert-body">' +
-          '<div class="alert-domain">' + escHtml(a.domain) + '</div>' +
-          '<div class="alert-msg">' + msg + ' &middot; via ' + escHtml(a.emailProvider) + ' &middot; ' + (a.success ? '&#x2714; sent' : '&#x2716; failed') + '</div>' +
+          '<div class="alert-domain">' + esc(a.domain) + '</div>' +
+          '<div class="alert-msg">' + msg + ' &middot; via ' + esc(a.emailProvider) + ' &middot; ' + (a.success ? '&#x2714; sent' : '&#x2716; failed') + '</div>' +
         '</div>' +
         '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">' +
           '<span class="badge ' + badgeCls + '" style="font-size:11px">' + (a.type==='expired'?'expired':a.daysRemaining+'d') + '</span>' +
@@ -898,7 +921,7 @@ async function loadSettings() {
       ['Max fuzzy scan history', s.maxFuzzyHistory],
       ['Default alert thresholds', s.defaultThresholds + ' days'],
       ['Fuzzy TLDs checked', s.fuzzyTlds],
-    ].map(([k,v]) => '<div><strong>' + k + ':</strong> ' + escHtml(String(v)) + '</div>').join('');
+    ].map(([k,v]) => '<div><strong>' + k + ':</strong> ' + esc(String(v)) + '</div>').join('');
   } catch(e) { toast('Failed to load settings', 'error'); }
 }
 
