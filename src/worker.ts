@@ -13,6 +13,7 @@ import {
   getRecentAlerts, saveAlert, getSettings, saveSettings,
 } from "./kv";
 import { renderApp } from "./ui";
+import { appJs } from "./app-js";
 
 export default {
   // ─── HTTP Handler ──────────────────────────────────────────────────────────
@@ -41,6 +42,17 @@ export default {
       );
       return new Response(renderApp(csrfToken), {
         headers: secureHeaders({ "Content-Type": "text/html; charset=utf-8" }),
+      });
+    }
+
+    // Serve client JS — auth not required (no sensitive data, CSRF is injected inline)
+    if (path === "/app.js") {
+      return new Response(appJs, {
+        headers: {
+          ...secureHeaders(),
+          "Content-Type": "application/javascript; charset=utf-8",
+          "Cache-Control": "no-store",
+        },
       });
     }
 

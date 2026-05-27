@@ -127,7 +127,7 @@ export function secureHeaders(extra: Record<string, string> = {}): HeadersInit {
   return {
     "Content-Security-Policy": [
       "default-src 'self'",
-      "script-src 'self' 'unsafe-inline'",  // inline scripts needed for our SPA
+      "script-src 'self' 'unsafe-inline'",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data:",
       "connect-src 'self'",
