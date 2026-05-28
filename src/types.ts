@@ -31,7 +31,8 @@ export interface MonitoredDomain {
   id: string;
   domain: string;
   addedAt: string;
-  expiresAt: string | null;
+  expiresAt: string | null;          // from RDAP
+  manualExpiresAt: string | null;    // user-entered fallback if RDAP fails
   registrar: string | null;
   lastChecked: string | null;
   alertThresholds: number[];

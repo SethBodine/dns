@@ -84,6 +84,9 @@ export default {
     if (path.match(/^\/api\/domains\/[^/]+\/thresholds$/) && method === "PUT") {
       return handleUpdateThresholds(request, env, path.split("/")[3]);
     }
+    if (path.match(/^\/api\/domains\/[^/]+\/manual-expiry$/) && method === "PUT") {
+      return handleSetManualExpiry(request, env, path.split("/")[3]);
+    }
 
     // ─── Fuzzy Finder API ────────────────────────────────────────────────────
     if (path === "/api/fuzzy" && method === "GET") return handleGetFuzzyScans(env);
@@ -261,6 +264,7 @@ async function handleAddDomain(request: Request, env: Env, ip: string): Promise<
     id: crypto.randomUUID(), domain,
     addedAt: new Date().toISOString(),
     expiresAt, registrar,
+    manualExpiresAt: null,
     lastChecked: new Date().toISOString(),
     alertThresholds: thresholds, alertsSent: [], notes: "",
   };
@@ -305,7 +309,8 @@ async function handleBulkMonitor(request: Request, env: Env, ip: string): Promis
     const { expiresAt, registrar } = await lookupDomainExpiry(domain);
     const d: MonitoredDomain = {
       id: crypto.randomUUID(), domain, addedAt: new Date().toISOString(),
-      expiresAt, registrar, lastChecked: new Date().toISOString(),
+      expiresAt, registrar, manualExpiresAt: null,
+      lastChecked: new Date().toISOString(),
       alertThresholds: thresholds, alertsSent: [], notes: "",
     };
     await saveDomain(env, d);
@@ -445,6 +450,19 @@ async function handleSaveSettings(request: Request, env: Env): Promise<Response>
     emailProvider: sanitizeText(String(body.emailProvider || ""), 20),
   });
   return jsonResponse({ ok: true });
+}
+
+async function handleSetManualExpiry(request: Request, env: Env, id: string): Promise<Response> {
+  if (!id || !/^[0-9a-f-]{36}$/.test(id)) return errorResponse("Invalid ID", 400);
+  const domain = await getDomain(env, id);
+  if (!domain) return errorResponse("Domain not found", 404);
+  const body = parseJsonBody(await request.text()) as Record<string, unknown> | null;
+  const dateStr = body?.expiresAt ? String(body.expiresAt) : null;
+  // Validate date format if provided
+  if (dateStr && isNaN(new Date(dateStr).getTime())) return errorResponse("Invalid date", 400);
+  const updated = { ...domain, manualExpiresAt: dateStr };
+  await saveDomain(env, updated);
+  return jsonResponse(updated);
 }
 
 async function handleTestEmail(request: Request, env: Env): Promise<Response> {

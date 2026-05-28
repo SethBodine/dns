@@ -1,34 +1,90 @@
 import type { MonitoredDomain, FuzzyVariant } from "./types";
 
-// ─── RDAP - Domain Expiry Lookup ─────────────────────────────────────────────
+// ─── TLD → RDAP server mapping ────────────────────────────────────────────────
+// rdap.org handles most gTLDs but not ccTLDs. This map covers the most common ones.
+// Longest suffix match wins (e.g. "co.nz" matched before "nz").
+const TLD_RDAP_MAP: Record<string, string> = {
+  // New Zealand
+  "co.nz":  "https://rdap.apnic.net/domain/",
+  "net.nz": "https://rdap.apnic.net/domain/",
+  "org.nz": "https://rdap.apnic.net/domain/",
+  "nz":     "https://rdap.apnic.net/domain/",
+  // Australia
+  "com.au": "https://rdap.auda.org.au/domain/",
+  "net.au": "https://rdap.auda.org.au/domain/",
+  "org.au": "https://rdap.auda.org.au/domain/",
+  "au":     "https://rdap.auda.org.au/domain/",
+  // United Kingdom
+  "co.uk":  "https://rdap.nominet.uk/domain/",
+  "org.uk": "https://rdap.nominet.uk/domain/",
+  "me.uk":  "https://rdap.nominet.uk/domain/",
+  "uk":     "https://rdap.nominet.uk/domain/",
+  // Europe
+  "de":     "https://rdap.denic.de/domain/",
+  "fr":     "https://rdap.nic.fr/domain/",
+  "nl":     "https://rdap.sidn.nl/domain/",
+  "it":     "https://rdap.nic.it/domain/",
+  "es":     "https://rdap.nic.es/domain/",
+  "pl":     "https://rdap.dns.pl/domain/",
+  "ch":     "https://rdap.nic.ch/domain/",
+  "se":     "https://rdap.iis.se/domain/",
+  "no":     "https://rdap.norid.no/domain/",
+  "dk":     "https://rdap.dk-hostmaster.dk/domain/",
+  "fi":     "https://rdap.fi/domain/",
+  // North America
+  "ca":     "https://rdap.cira.ca/domain/",
+  // Asia-Pacific
+  "jp":     "https://rdap.jprs.jp/domain/",
+  "br":     "https://rdap.registro.br/domain/",
+};
 
-const RDAP_ENDPOINTS = [
+// Generic fallback endpoints (handle most gTLDs: .com .net .org .io etc.)
+const RDAP_FALLBACKS = [
   "https://rdap.org/domain/",
   "https://rdap.iana.org/domain/",
 ];
+
+function getRdapEndpoints(domain: string): string[] {
+  // Try longest suffix match first
+  const parts = domain.toLowerCase().split(".");
+  for (let i = 1; i < parts.length; i++) {
+    const suffix = parts.slice(i).join(".");
+    if (TLD_RDAP_MAP[suffix]) {
+      console.log(`RDAP: matched TLD '${suffix}' -> ${TLD_RDAP_MAP[suffix]}`);
+      return [TLD_RDAP_MAP[suffix], ...RDAP_FALLBACKS];
+    }
+  }
+  // No specific match — use generic fallbacks
+  return RDAP_FALLBACKS;
+}
+
+// ─── RDAP Lookup ──────────────────────────────────────────────────────────────
 
 interface RdapEvent { eventAction: string; eventDate: string }
 interface RdapEntity { roles: string[]; vcardArray?: unknown[]; handle?: string }
 interface RdapResponse {
   events?: RdapEvent[];
   entities?: RdapEntity[];
-  // Some registries nest under links or use different field names
   expirationDate?: string;
 }
 
-async function tryRdapEndpoint(endpoint: string, domain: string): Promise<{ data: RdapResponse | null; status: number | null }> {
+async function tryRdapEndpoint(
+  endpoint: string,
+  domain: string
+): Promise<{ data: RdapResponse | null; status: number | null }> {
   try {
     const res = await fetch(`${endpoint}${encodeURIComponent(domain)}`, {
       headers: {
         Accept: "application/rdap+json,application/json;q=0.9",
-        "User-Agent": "domain-watch/1.0 (monitoring tool)",
+        "User-Agent": "domain-watch/1.0",
       },
       signal: AbortSignal.timeout(15000),
     });
     console.log(`RDAP ${endpoint}${domain} -> HTTP ${res.status}`);
     if (!res.ok) return { data: null, status: res.status };
     const data = await res.json() as RdapResponse;
-    console.log(`RDAP events: ${JSON.stringify(data.events?.map(e => e.eventAction))}`);
+    const eventActions = data.events?.map(e => e.eventAction) ?? [];
+    console.log(`RDAP events: ${JSON.stringify(eventActions)}`);
     return { data, status: res.status };
   } catch (e) {
     console.log(`RDAP ${endpoint}${domain} -> ERROR: ${String(e)}`);
@@ -37,18 +93,15 @@ async function tryRdapEndpoint(endpoint: string, domain: string): Promise<{ data
 }
 
 function extractExpiry(data: RdapResponse): string | null {
-  if (!data) return null;
-  // Standard RDAP event actions for expiry (registries vary)
-  const expiryActions = ["expiration", "expires", "expiry", "domain expiration", "registrar expiration"];
-  const evt = data.events?.find(e => expiryActions.some(a => e.eventAction?.toLowerCase().includes(a)));
+  // RDAP event action names vary by registry
+  const expiryKeywords = ["expir", "expiry", "deletion"];
+  const evt = data.events?.find(e =>
+    expiryKeywords.some(k => e.eventAction?.toLowerCase().includes(k))
+  );
   if (evt?.eventDate) return evt.eventDate;
-  // Some registries put it at top level
   if (data.expirationDate) return data.expirationDate;
-  // Log all event actions so we can diagnose unknown formats
   if (data.events?.length) {
-    console.log(`RDAP: no expiry event found. All events: ${JSON.stringify(data.events.map(e => e.eventAction))}`);
-  } else {
-    console.log("RDAP: response has no events array");
+    console.log(`RDAP: no expiry event. Actions: ${JSON.stringify(data.events.map(e => e.eventAction))}`);
   }
   return null;
 }
@@ -71,18 +124,26 @@ export async function lookupDomainExpiry(domain: string): Promise<{
   expiresAt: string | null;
   registrar: string | null;
 }> {
-  for (const endpoint of RDAP_ENDPOINTS) {
+  const endpoints = getRdapEndpoints(domain);
+  const seen = new Set<string>();
+
+  for (const endpoint of endpoints) {
+    if (seen.has(endpoint)) continue;
+    seen.add(endpoint);
+
     const { data, status } = await tryRdapEndpoint(endpoint, domain);
     if (!data || status !== 200) continue;
+
     const expiresAt = extractExpiry(data);
     const registrar = extractRegistrar(data);
     if (expiresAt) {
       console.log(`RDAP success: ${domain} expires ${expiresAt}`);
       return { expiresAt, registrar };
     }
-    // Got a response but no expiry — log full response for diagnosis
-    console.log(`RDAP: got response but no expiry for ${domain}. Keys: ${Object.keys(data).join(", ")}`);
+    // Got 200 but no expiry — log what we received
+    console.log(`RDAP 200 but no expiry for ${domain}. Top-level keys: ${Object.keys(data).join(", ")}`);
   }
+
   return { expiresAt: null, registrar: null };
 }
 
@@ -112,18 +173,13 @@ export async function checkDomainExists(domain: string): Promise<boolean | null>
     dnsQuery(domain, "A"),
     dnsQuery(domain, "NS"),
   ]);
-  // NXDOMAIN (3) on both = not registered
   if (a?.status === 3 && ns?.status === 3) return false;
-  // NOERROR with answers on either = registered
   if ((a?.status === 0 && a.hasAnswers) || (ns?.status === 0 && ns.hasAnswers)) return true;
-  // NOERROR without answers can mean parked/registered but no records
   if (a?.status === 0 || ns?.status === 0) return true;
-  // One NXDOMAIN + one unknown = trust NXDOMAIN
   if (a?.status === 3 || ns?.status === 3) return false;
   return null;
 }
 
-// Recheck only unknown variants — smaller batches, longer delay
 export async function recheckUnknowns(unknownDomains: string[]): Promise<Map<string, boolean | null>> {
   const results = new Map<string, boolean | null>();
   const batchSize = 5;
