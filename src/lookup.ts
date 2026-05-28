@@ -1,112 +1,34 @@
-import type { MonitoredDomain, FuzzyVariant } from "./types";
+import type { MonitoredDomain, FuzzyVariant, Env } from "./types";
 
-// ─── WHOIS via who-dat (primary) ──────────────────────────────────────────────
-// Free public WHOIS-over-HTTP API, no key required.
-// Returns JSON with expiry and registrar data for most TLDs.
+// ─── Lookup strategy ─────────────────────────────────────────────────────────
+// 1. KV cache (24h TTL) — avoids repeat hits on every refresh
+// 2. rdap.org with redirect-following — handles gTLDs (.com .net .io etc)
+//    rdap.org returns 302 to the authoritative RDAP server; following the
+//    redirect is essential, fetch() must use redirect: "follow"
+// 3. whoisjson.com — JSON WHOIS API, covers ccTLDs including .co.nz
+//    Free plan: 1,000 req/month, no credit card, no expiry
+//    Secret: WHOIS_API_KEY  (wrangler secret put WHOIS_API_KEY)
+//    If no key set, still works for many TLDs at a lower rate limit
+// 4. Manual expiry fallback (set in UI)
 
-interface WhoDatResponse {
-  domain?: {
-    expiration_date?: string;
-    updated_date?: string;
-    creation_date?: string;
-    registrar?: string;
-    name?: string;
-  };
-  error?: string;
-}
+const CACHE_TTL_SECONDS = 60 * 60 * 24; // 24 hours
 
-async function lookupViaWhoDat(domain: string): Promise<{
-  expiresAt: string | null;
-  registrar: string | null;
-} | null> {
+// ─── KV cache ─────────────────────────────────────────────────────────────────
+
+async function getCached(env: Env, domain: string): Promise<{ expiresAt: string; registrar: string | null } | null> {
   try {
-    const res = await fetch(`https://who-dat.as93.net/${encodeURIComponent(domain)}`, {
-      headers: { Accept: "application/json", "User-Agent": "domain-watch/1.0" },
-      signal: AbortSignal.timeout(12000),
-    });
-    console.log(`WHOIS who-dat ${domain} -> HTTP ${res.status}`);
-    if (!res.ok) return null;
-
-    const data = await res.json() as WhoDatResponse;
-    if (data.error || !data.domain) {
-      console.log(`WHOIS who-dat: no domain data for ${domain}`);
-      return null;
-    }
-
-    const expiresAt = data.domain.expiration_date ?? null;
-    const registrar = data.domain.registrar ?? null;
-    if (expiresAt) console.log(`WHOIS success: ${domain} expires ${expiresAt}`);
-    return { expiresAt, registrar };
-  } catch (e) {
-    console.log(`WHOIS who-dat ${domain} -> ERROR: ${String(e)}`);
-    return null;
-  }
+    const raw = await env.KV.get(`expiry:${domain}`, "json") as { expiresAt: string; registrar: string | null } | null;
+    return raw;
+  } catch { return null; }
 }
 
-// ─── RDAP (fallback) ─────────────────────────────────────────────────────────
-// Used if WHOIS fails. Authoritative per-TLD servers based on IANA bootstrap.
-
-const TLD_RDAP: Record<string, string> = {
-  // gTLDs — Verisign
-  "com":    "https://rdap.verisign.com/com/v1/domain/",
-  "net":    "https://rdap.verisign.com/net/v1/domain/",
-  // PIR
-  "org":    "https://rdap.publicinterestregistry.org/rdap/domain/",
-  // AFILIAS / various
-  "info":   "https://rdap.afilias.net/rdap/info/domain/",
-  "io":     "https://rdap.nic.io/domain/",
-  "co":     "https://rdap.nic.co/domain/",
-  "app":    "https://rdap.nic.google/domain/",
-  "dev":    "https://rdap.nic.google/domain/",
-  "ai":     "https://rdap.nic.ai/domain/",
-  "me":     "https://rdap.nic.me/domain/",
-  "biz":    "https://rdap.nic.biz/domain/",
-  // NZ — NZRS
-  "nz":     "https://rdap.nzrs.net.nz/domain/",
-  "co.nz":  "https://rdap.nzrs.net.nz/domain/",
-  "net.nz": "https://rdap.nzrs.net.nz/domain/",
-  "org.nz": "https://rdap.nzrs.net.nz/domain/",
-  // AU — auDA
-  "au":     "https://rdap.auda.org.au/domain/",
-  "com.au": "https://rdap.auda.org.au/domain/",
-  "net.au": "https://rdap.auda.org.au/domain/",
-  "org.au": "https://rdap.auda.org.au/domain/",
-  // UK — Nominet
-  "uk":     "https://rdap.nominet.uk/domain/",
-  "co.uk":  "https://rdap.nominet.uk/domain/",
-  "org.uk": "https://rdap.nominet.uk/domain/",
-  "me.uk":  "https://rdap.nominet.uk/domain/",
-  // Europe
-  "de":     "https://rdap.denic.de/domain/",
-  "fr":     "https://rdap.nic.fr/domain/",
-  "nl":     "https://rdap.sidn.nl/domain/",
-  "it":     "https://rdap.nic.it/domain/",
-  "es":     "https://rdap.nic.es/domain/",
-  "pl":     "https://rdap.dns.pl/domain/",
-  "ch":     "https://rdap.nic.ch/domain/",
-  "se":     "https://rdap.iis.se/domain/",
-  "no":     "https://rdap.norid.no/domain/",
-  "dk":     "https://rdap.dk-hostmaster.dk/domain/",
-  "fi":     "https://rdap.fi/domain/",
-  // Americas
-  "ca":     "https://rdap.cira.ca/domain/",
-  "br":     "https://rdap.registro.br/domain/",
-  // Asia
-  "jp":     "https://rdap.jprs.jp/domain/",
-};
-
-const RDAP_GENERIC = "https://rdap.org/domain/";
-
-function getRdapUrl(domain: string): string {
-  const lower = domain.toLowerCase();
-  const parts = lower.split(".");
-  // Try longest suffix match (e.g. "co.nz" before "nz")
-  for (let i = 1; i < parts.length; i++) {
-    const suffix = parts.slice(i).join(".");
-    if (TLD_RDAP[suffix]) return TLD_RDAP[suffix];
-  }
-  return RDAP_GENERIC;
+async function setCached(env: Env, domain: string, expiresAt: string, registrar: string | null): Promise<void> {
+  try {
+    await env.KV.put(`expiry:${domain}`, JSON.stringify({ expiresAt, registrar }), { expirationTtl: CACHE_TTL_SECONDS });
+  } catch { /* ignore cache write errors */ }
 }
+
+// ─── RDAP with redirect following ────────────────────────────────────────────
 
 interface RdapResponse {
   events?: Array<{ eventAction: string; eventDate: string }>;
@@ -114,19 +36,17 @@ interface RdapResponse {
   expirationDate?: string;
 }
 
-async function lookupViaRdap(domain: string): Promise<{
-  expiresAt: string | null;
-  registrar: string | null;
-} | null> {
-  const endpoint = getRdapUrl(domain);
-  console.log(`RDAP trying ${endpoint}${domain}`);
+async function lookupViaRdap(domain: string): Promise<{ expiresAt: string | null; registrar: string | null } | null> {
   try {
-    const res = await fetch(`${endpoint}${encodeURIComponent(domain)}`, {
+    // redirect: "follow" is critical — rdap.org sends 302 to authoritative server
+    const res = await fetch(`https://rdap.org/domain/${encodeURIComponent(domain)}`, {
       headers: { Accept: "application/rdap+json,application/json;q=0.9", "User-Agent": "domain-watch/1.0" },
-      signal: AbortSignal.timeout(12000),
+      redirect: "follow",
+      signal: AbortSignal.timeout(15000),
     });
-    console.log(`RDAP ${endpoint}${domain} -> HTTP ${res.status}`);
-    // 404 = domain not registered (valid response), not an endpoint error
+    console.log(`RDAP rdap.org ${domain} -> HTTP ${res.status} (final URL: ${res.url})`);
+
+    // 404 = domain not found in registry (unregistered), not a server error
     if (res.status === 404) return { expiresAt: null, registrar: null };
     if (!res.ok) return null;
 
@@ -147,33 +67,104 @@ async function lookupViaRdap(domain: string): Promise<{
     }
     if (!registrar && reg?.handle) registrar = reg.handle;
 
-    if (expiresAt) console.log(`RDAP success: ${domain} expires ${expiresAt}`);
-    else console.log(`RDAP 200 but no expiry. Events: ${JSON.stringify(data.events?.map(e => e.eventAction))}`);
+    console.log(`RDAP ${domain}: expiresAt=${expiresAt}, events=${JSON.stringify(data.events?.map(e => e.eventAction))}`);
     return { expiresAt, registrar };
   } catch (e) {
-    console.log(`RDAP ${domain} -> ERROR: ${String(e)}`);
+    console.log(`RDAP error for ${domain}: ${String(e)}`);
+    return null;
+  }
+}
+
+// ─── WhoisJSON API (covers ccTLDs including .co.nz) ───────────────────────────
+// Free plan: 1,000 req/month at whoisjson.com — sign up and set WHOIS_API_KEY secret
+// Works without a key too, but at a much lower rate limit
+
+interface WhoisJsonResponse {
+  domain?: {
+    expiration_date?: string;
+    expiry_date?: string;
+    expires?: string;
+    registrar?: string;
+  };
+  registrar?: { name?: string };
+  expiration_date?: string;
+  [key: string]: unknown;
+}
+
+async function lookupViaWhoisJson(domain: string, apiKey?: string): Promise<{ expiresAt: string | null; registrar: string | null } | null> {
+  try {
+    const headers: Record<string, string> = {
+      Accept: "application/json",
+      "User-Agent": "domain-watch/1.0",
+    };
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+    const res = await fetch(`https://whoisjson.com/api/v1/whois?domain=${encodeURIComponent(domain)}`, {
+      headers,
+      signal: AbortSignal.timeout(15000),
+    });
+    console.log(`WhoisJSON ${domain} -> HTTP ${res.status}`);
+    if (res.status === 429) {
+      console.log("WhoisJSON rate limited — add WHOIS_API_KEY secret for more capacity");
+      return null;
+    }
+    if (!res.ok) return null;
+
+    const data = await res.json() as WhoisJsonResponse;
+    // Field names vary by registry — check all common ones
+    const expiresAt =
+      data.domain?.expiration_date ??
+      data.domain?.expiry_date ??
+      data.domain?.expires ??
+      data.expiration_date as string ?? null;
+
+    const registrar =
+      data.domain?.registrar ??
+      data.registrar?.name ??
+      null;
+
+    console.log(`WhoisJSON ${domain}: expiresAt=${expiresAt}, registrar=${registrar}`);
+    return { expiresAt: expiresAt || null, registrar: registrar || null };
+  } catch (e) {
+    console.log(`WhoisJSON error for ${domain}: ${String(e)}`);
     return null;
   }
 }
 
 // ─── Main expiry lookup ───────────────────────────────────────────────────────
 
-export async function lookupDomainExpiry(domain: string): Promise<{
+export async function lookupDomainExpiry(domain: string, env?: Env): Promise<{
   expiresAt: string | null;
   registrar: string | null;
 }> {
-  // Try WHOIS first (broader TLD support, simpler)
-  const whois = await lookupViaWhoDat(domain);
-  if (whois?.expiresAt) return whois;
+  // 1. Check KV cache first
+  if (env) {
+    const cached = await getCached(env, domain);
+    if (cached) {
+      console.log(`Cache hit for ${domain}: expires ${cached.expiresAt}`);
+      return cached;
+    }
+  }
 
-  // Fall back to RDAP
+  // 2. Try RDAP with redirect following (best for gTLDs)
   const rdap = await lookupViaRdap(domain);
-  if (rdap?.expiresAt) return rdap;
+  if (rdap?.expiresAt) {
+    if (env) await setCached(env, domain, rdap.expiresAt, rdap.registrar);
+    return rdap;
+  }
 
-  // Return whatever partial data we have (registrar without expiry, etc.)
+  // 3. Try WhoisJSON (better ccTLD coverage, including .co.nz)
+  const apiKey = env?.WHOIS_API_KEY;
+  const whois = await lookupViaWhoisJson(domain, apiKey);
+  if (whois?.expiresAt) {
+    if (env) await setCached(env, domain, whois.expiresAt, whois.registrar);
+    return whois;
+  }
+
+  // Return partial data if we got registrar but no expiry
   return {
-    expiresAt: whois?.expiresAt ?? rdap?.expiresAt ?? null,
-    registrar: whois?.registrar ?? rdap?.registrar ?? null,
+    expiresAt: null,
+    registrar: rdap?.registrar ?? whois?.registrar ?? null,
   };
 }
 
@@ -193,9 +184,7 @@ async function dnsQuery(domain: string, type: string): Promise<{ status: number;
     if (!res.ok) return null;
     const data = await res.json() as { Status: number; Answer?: unknown[] };
     return { status: data.Status, hasAnswers: !!(data.Answer?.length) };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 export async function checkDomainExists(domain: string): Promise<boolean | null> {
@@ -210,7 +199,6 @@ export async function checkDomainExists(domain: string): Promise<boolean | null>
   return null;
 }
 
-// Recheck unknowns with small batches and delays
 export async function recheckUnknowns(unknownDomains: string[]): Promise<Map<string, boolean | null>> {
   const results = new Map<string, boolean | null>();
   const batchSize = 5;
@@ -281,12 +269,10 @@ export function shouldAlert(domain: MonitoredDomain): number[] {
   const effectiveExpiry = domain.expiresAt || domain.manualExpiresAt;
   if (!effectiveExpiry) return [];
   const days = daysUntilExpiry(effectiveExpiry);
-  // Only alert on the SINGLE closest threshold not yet sent
-  // (avoids sending multiple alerts for an already-expired domain on first check)
+  // Return only the single closest pending threshold to avoid burst alerts
   const pending = domain.alertThresholds
     .filter(t => days <= t && !domain.alertsSent.includes(t))
-    .sort((a, b) => a - b); // ascending — smallest threshold first
-  // Return only the closest one
+    .sort((a, b) => a - b);
   return pending.length ? [pending[0]] : [];
 }
 

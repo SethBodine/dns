@@ -21,6 +21,9 @@ export interface Env {
   MAILGUN_SENDING_DOMAIN?: string;  // renamed from MAILGUN_DOMAIN to avoid Cloudflare stripping it
   SENDGRID_API_KEY?: string;
 
+  // Optional WHOIS API key for better ccTLD coverage (whoisjson.com free tier)
+  WHOIS_API_KEY?: string;
+
   // Email defaults (can be overridden via UI/KV)
   EMAIL_FROM?: string;
   EMAIL_TO?: string;

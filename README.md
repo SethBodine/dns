@@ -191,6 +191,10 @@ npx wrangler secret put SENDGRID_API_KEY
 npx wrangler secret put EMAIL_FROM
 npx wrangler secret put EMAIL_TO
 npx wrangler secret put EMAIL_SUBJECT_PREFIX
+
+# Optional: improves ccTLD lookups (.co.nz, .com.au, .co.uk etc)
+# Get a free key at https://whoisjson.com — 1,000 req/month, no credit card
+npx wrangler secret put WHOIS_API_KEY
 ```
 
 #### 5. Configure limits (optional)
@@ -289,6 +293,7 @@ The first deploy will fail because secrets are not set yet. That is expected —
 | `EMAIL_FROM` | e.g. `alerts@yourdomain.com` |
 | `EMAIL_TO` | e.g. `you@yourdomain.com` |
 | `EMAIL_SUBJECT_PREFIX` | e.g. `[Domain Watch]` |
+| `WHOIS_API_KEY` | *(optional but recommended)* Free key from [whoisjson.com](https://whoisjson.com) — improves `.co.nz`, `.com.au`, `.co.uk` and other ccTLD expiry lookups. Without it, ccTLD lookups may hit rate limits. |
 
 Secrets are encrypted at rest and never visible after saving.
 

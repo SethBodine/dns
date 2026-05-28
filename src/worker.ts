@@ -119,7 +119,7 @@ export default {
 
     for (const domain of domains) {
       try {
-        const { expiresAt, registrar } = await lookupDomainExpiry(domain.domain);
+        const { expiresAt, registrar } = await lookupDomainExpiry(domain.domain, env);
         const updated: MonitoredDomain = {
           ...domain,
           expiresAt: expiresAt ?? domain.expiresAt,
@@ -261,7 +261,7 @@ async function handleAddDomain(request: Request, env: Env, ip: string): Promise<
 
   if (!await checkRateLimit(env, ip, "lookup")) return errorResponse("Lookup rate limit exceeded", 429);
 
-  const { expiresAt, registrar } = await lookupDomainExpiry(domain);
+  const { expiresAt, registrar } = await lookupDomainExpiry(domain, env);
 
   const newDomain: MonitoredDomain = {
     id: crypto.randomUUID(), domain,
@@ -309,7 +309,7 @@ async function handleBulkMonitor(request: Request, env: Env, ip: string): Promis
       ? (body.alertThresholds as unknown[]).map(Number).filter((n) => [90, 60, 30, 14, 7].includes(n))
       : [90, 60, 30, 14, 7];
 
-    const { expiresAt, registrar } = await lookupDomainExpiry(domain);
+    const { expiresAt, registrar } = await lookupDomainExpiry(domain, env);
     const d: MonitoredDomain = {
       id: crypto.randomUUID(), domain, addedAt: new Date().toISOString(),
       expiresAt, registrar, manualExpiresAt: null,
@@ -329,7 +329,7 @@ async function handleRefreshDomain(env: Env, id: string, ip: string): Promise<Re
   if (!domain) return errorResponse("Domain not found", 404);
   if (!await checkRateLimit(env, ip, "lookup")) return errorResponse("Lookup rate limit exceeded", 429);
 
-  const { expiresAt, registrar } = await lookupDomainExpiry(domain.domain);
+  const { expiresAt, registrar } = await lookupDomainExpiry(domain.domain, env);
   const updated = {
     ...domain,
     expiresAt: expiresAt ?? domain.expiresAt,

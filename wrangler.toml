@@ -68,3 +68,8 @@ FUZZY_TLDS = ".com,.net,.org,.io,.co,.ai,.app,.dev,.info,.biz,.co.uk,.co.nz,.com
 #   EMAIL_FROM            - Sender address e.g. alerts@yourdomain.com
 #   EMAIL_TO              - Recipient address
 #   EMAIL_SUBJECT_PREFIX  - e.g. [Domain Watch]
+#
+# Domain lookup (optional but recommended for ccTLD coverage e.g. .co.nz .com.au):
+#   WHOIS_API_KEY         - Free API key from whoisjson.com (1,000 req/month free)
+#                           Without this key .co.nz and other ccTLDs may fail.
+#                           Sign up at https://whoisjson.com then: wrangler secret put WHOIS_API_KEY
