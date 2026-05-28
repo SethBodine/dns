@@ -71,7 +71,7 @@ The worker inspects which API key is set and auto-selects the provider:
 | Env var set | Provider used |
 |-------------|---------------|
 | `RESEND_API_KEY` | Resend |
-| `MAILGUN_API_KEY` + `MAILGUN_DOMAIN` | Mailgun |
+| `MAILGUN_API_KEY` + `MAILGUN_SENDING_DOMAIN` | Mailgun |
 | `SENDGRID_API_KEY` | SendGrid |
 
 Alert thresholds are configurable per-domain via the UI. The daily cron tracks which thresholds have already been alerted to avoid duplicates.
@@ -183,7 +183,7 @@ npx wrangler secret put SESSION_SECRET     # random 32+ chars: openssl rand -bas
 npx wrangler secret put RESEND_API_KEY     # https://resend.com (recommended)
 # OR
 npx wrangler secret put MAILGUN_API_KEY
-npx wrangler secret put MAILGUN_DOMAIN     # e.g. mg.yourdomain.com
+npx wrangler secret put MAILGUN_SENDING_DOMAIN     # e.g. mg.yourdomain.com
 # OR
 npx wrangler secret put SENDGRID_API_KEY
 
@@ -284,7 +284,7 @@ The first deploy will fail because secrets are not set yet. That is expected —
 | `SESSION_SECRET` | Random 32+ char string — generate with `openssl rand -base64 32` |
 | `RESEND_API_KEY` | Your Resend API key — **or** use Mailgun/SendGrid below |
 | `MAILGUN_API_KEY` | *(if using Mailgun)* |
-| `MAILGUN_DOMAIN` | *(if using Mailgun)* e.g. `mg.yourdomain.com` |
+| `MAILGUN_SENDING_DOMAIN` | *(if using Mailgun)* e.g. `mg.yourdomain.com` |
 | `SENDGRID_API_KEY` | *(if using SendGrid)* |
 | `EMAIL_FROM` | e.g. `alerts@yourdomain.com` |
 | `EMAIL_TO` | e.g. `you@yourdomain.com` |

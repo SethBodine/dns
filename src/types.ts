@@ -18,7 +18,7 @@ export interface Env {
   // Email secrets (optional, at least one set)
   RESEND_API_KEY?: string;
   MAILGUN_API_KEY?: string;
-  MAILGUN_DOMAIN?: string;
+  MAILGUN_SENDING_DOMAIN?: string;  // renamed from MAILGUN_DOMAIN to avoid Cloudflare stripping it
   SENDGRID_API_KEY?: string;
 
   // Email defaults (can be overridden via UI/KV)

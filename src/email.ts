@@ -6,7 +6,7 @@ export type EmailProvider = "resend" | "mailgun" | "sendgrid" | "none";
 export function detectAllProviders(env: Env): EmailProvider[] {
   const found: EmailProvider[] = [];
   if (env.RESEND_API_KEY) found.push("resend");
-  if (env.MAILGUN_API_KEY && env.MAILGUN_DOMAIN) found.push("mailgun");
+  if (env.MAILGUN_API_KEY && env.MAILGUN_SENDING_DOMAIN) found.push("mailgun");
   if (env.SENDGRID_API_KEY) found.push("sendgrid");
   return found;
 }
@@ -100,7 +100,7 @@ async function sendViaMailgun(params: SendParams, env: Env): Promise<{ ok: boole
   form.append("text", params.text);
 
   const res = await fetch(
-    `https://api.mailgun.net/v3/${env.MAILGUN_DOMAIN}/messages`,
+    `https://api.mailgun.net/v3/${env.MAILGUN_SENDING_DOMAIN}/messages`,
     {
       method: "POST",
       headers: { Authorization: `Basic ${btoa(`api:${env.MAILGUN_API_KEY}`)}` },
@@ -142,11 +142,13 @@ export function buildExpiryEmail(
   domain: string,
   daysRemaining: number,
   expiresAt: string,
-  subjectPrefix: string
+  subjectPrefix: string,
+  thresholdLabel = ""
 ): { subject: string; html: string; text: string } {
   const isExpired = daysRemaining <= 0;
   const urgency = isExpired ? "EXPIRED" : daysRemaining <= 7 ? "URGENT" : "Warning";
-  const subject = `${subjectPrefix} ${urgency}: ${domain} ${isExpired ? "has expired" : `expires in ${daysRemaining} days`}`;
+  const alertTag = thresholdLabel ? ` [${thresholdLabel} alert]` : "";
+  const subject = `${subjectPrefix}${alertTag} ${urgency}: ${domain} ${isExpired ? "has expired" : `expires in ${daysRemaining} days`}`;
   const expDate = new Date(expiresAt).toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
   const color = isExpired ? "#E24B4A" : daysRemaining <= 7 ? "#BA7517" : "#1D9E75";
 
@@ -154,7 +156,7 @@ export function buildExpiryEmail(
 <body style="font-family:system-ui,sans-serif;max-width:560px;margin:40px auto;padding:0 20px;color:#1a1a1a">
   <div style="border-left:4px solid ${color};padding-left:16px;margin-bottom:24px">
     <h1 style="font-size:18px;font-weight:600;margin:0 0 4px">${isExpired ? "Domain Expired" : `Domain Expiry ${urgency}`}</h1>
-    <p style="margin:0;color:#555;font-size:14px">${subjectPrefix} automated alert</p>
+    <p style="margin:0;color:#555;font-size:14px">${subjectPrefix} automated alert${thresholdLabel ? ` &mdash; ${thresholdLabel} threshold` : ""}</p>
   </div>
   <table style="width:100%;border-collapse:collapse;font-size:14px">
     <tr><td style="padding:10px 0;border-bottom:1px solid #eee;color:#555;width:140px">Domain</td><td style="padding:10px 0;border-bottom:1px solid #eee;font-weight:600">${domain}</td></tr>

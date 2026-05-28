@@ -1,24 +1,81 @@
 import type { MonitoredDomain, FuzzyVariant } from "./types";
 
-// ─── TLD → RDAP server mapping ────────────────────────────────────────────────
-// rdap.org handles most gTLDs but not ccTLDs. This map covers the most common ones.
-// Longest suffix match wins (e.g. "co.nz" matched before "nz").
-const TLD_RDAP_MAP: Record<string, string> = {
-  // New Zealand
-  "co.nz":  "https://rdap.apnic.net/domain/",
-  "net.nz": "https://rdap.apnic.net/domain/",
-  "org.nz": "https://rdap.apnic.net/domain/",
-  "nz":     "https://rdap.apnic.net/domain/",
-  // Australia
+// ─── WHOIS via who-dat (primary) ──────────────────────────────────────────────
+// Free public WHOIS-over-HTTP API, no key required.
+// Returns JSON with expiry and registrar data for most TLDs.
+
+interface WhoDatResponse {
+  domain?: {
+    expiration_date?: string;
+    updated_date?: string;
+    creation_date?: string;
+    registrar?: string;
+    name?: string;
+  };
+  error?: string;
+}
+
+async function lookupViaWhoDat(domain: string): Promise<{
+  expiresAt: string | null;
+  registrar: string | null;
+} | null> {
+  try {
+    const res = await fetch(`https://who-dat.as93.net/${encodeURIComponent(domain)}`, {
+      headers: { Accept: "application/json", "User-Agent": "domain-watch/1.0" },
+      signal: AbortSignal.timeout(12000),
+    });
+    console.log(`WHOIS who-dat ${domain} -> HTTP ${res.status}`);
+    if (!res.ok) return null;
+
+    const data = await res.json() as WhoDatResponse;
+    if (data.error || !data.domain) {
+      console.log(`WHOIS who-dat: no domain data for ${domain}`);
+      return null;
+    }
+
+    const expiresAt = data.domain.expiration_date ?? null;
+    const registrar = data.domain.registrar ?? null;
+    if (expiresAt) console.log(`WHOIS success: ${domain} expires ${expiresAt}`);
+    return { expiresAt, registrar };
+  } catch (e) {
+    console.log(`WHOIS who-dat ${domain} -> ERROR: ${String(e)}`);
+    return null;
+  }
+}
+
+// ─── RDAP (fallback) ─────────────────────────────────────────────────────────
+// Used if WHOIS fails. Authoritative per-TLD servers based on IANA bootstrap.
+
+const TLD_RDAP: Record<string, string> = {
+  // gTLDs — Verisign
+  "com":    "https://rdap.verisign.com/com/v1/domain/",
+  "net":    "https://rdap.verisign.com/net/v1/domain/",
+  // PIR
+  "org":    "https://rdap.publicinterestregistry.org/rdap/domain/",
+  // AFILIAS / various
+  "info":   "https://rdap.afilias.net/rdap/info/domain/",
+  "io":     "https://rdap.nic.io/domain/",
+  "co":     "https://rdap.nic.co/domain/",
+  "app":    "https://rdap.nic.google/domain/",
+  "dev":    "https://rdap.nic.google/domain/",
+  "ai":     "https://rdap.nic.ai/domain/",
+  "me":     "https://rdap.nic.me/domain/",
+  "biz":    "https://rdap.nic.biz/domain/",
+  // NZ — NZRS
+  "nz":     "https://rdap.nzrs.net.nz/domain/",
+  "co.nz":  "https://rdap.nzrs.net.nz/domain/",
+  "net.nz": "https://rdap.nzrs.net.nz/domain/",
+  "org.nz": "https://rdap.nzrs.net.nz/domain/",
+  // AU — auDA
+  "au":     "https://rdap.auda.org.au/domain/",
   "com.au": "https://rdap.auda.org.au/domain/",
   "net.au": "https://rdap.auda.org.au/domain/",
   "org.au": "https://rdap.auda.org.au/domain/",
-  "au":     "https://rdap.auda.org.au/domain/",
-  // United Kingdom
+  // UK — Nominet
+  "uk":     "https://rdap.nominet.uk/domain/",
   "co.uk":  "https://rdap.nominet.uk/domain/",
   "org.uk": "https://rdap.nominet.uk/domain/",
   "me.uk":  "https://rdap.nominet.uk/domain/",
-  "uk":     "https://rdap.nominet.uk/domain/",
   // Europe
   "de":     "https://rdap.denic.de/domain/",
   "fr":     "https://rdap.nic.fr/domain/",
@@ -31,120 +88,93 @@ const TLD_RDAP_MAP: Record<string, string> = {
   "no":     "https://rdap.norid.no/domain/",
   "dk":     "https://rdap.dk-hostmaster.dk/domain/",
   "fi":     "https://rdap.fi/domain/",
-  // North America
+  // Americas
   "ca":     "https://rdap.cira.ca/domain/",
-  // Asia-Pacific
-  "jp":     "https://rdap.jprs.jp/domain/",
   "br":     "https://rdap.registro.br/domain/",
+  // Asia
+  "jp":     "https://rdap.jprs.jp/domain/",
 };
 
-// Generic fallback endpoints (handle most gTLDs: .com .net .org .io etc.)
-const RDAP_FALLBACKS = [
-  "https://rdap.org/domain/",
-  "https://rdap.iana.org/domain/",
-];
+const RDAP_GENERIC = "https://rdap.org/domain/";
 
-function getRdapEndpoints(domain: string): string[] {
-  // Try longest suffix match first
-  const parts = domain.toLowerCase().split(".");
+function getRdapUrl(domain: string): string {
+  const lower = domain.toLowerCase();
+  const parts = lower.split(".");
+  // Try longest suffix match (e.g. "co.nz" before "nz")
   for (let i = 1; i < parts.length; i++) {
     const suffix = parts.slice(i).join(".");
-    if (TLD_RDAP_MAP[suffix]) {
-      console.log(`RDAP: matched TLD '${suffix}' -> ${TLD_RDAP_MAP[suffix]}`);
-      return [TLD_RDAP_MAP[suffix], ...RDAP_FALLBACKS];
-    }
+    if (TLD_RDAP[suffix]) return TLD_RDAP[suffix];
   }
-  // No specific match — use generic fallbacks
-  return RDAP_FALLBACKS;
+  return RDAP_GENERIC;
 }
 
-// ─── RDAP Lookup ──────────────────────────────────────────────────────────────
-
-interface RdapEvent { eventAction: string; eventDate: string }
-interface RdapEntity { roles: string[]; vcardArray?: unknown[]; handle?: string }
 interface RdapResponse {
-  events?: RdapEvent[];
-  entities?: RdapEntity[];
+  events?: Array<{ eventAction: string; eventDate: string }>;
+  entities?: Array<{ roles: string[]; vcardArray?: unknown[]; handle?: string }>;
   expirationDate?: string;
 }
 
-async function tryRdapEndpoint(
-  endpoint: string,
-  domain: string
-): Promise<{ data: RdapResponse | null; status: number | null }> {
+async function lookupViaRdap(domain: string): Promise<{
+  expiresAt: string | null;
+  registrar: string | null;
+} | null> {
+  const endpoint = getRdapUrl(domain);
+  console.log(`RDAP trying ${endpoint}${domain}`);
   try {
     const res = await fetch(`${endpoint}${encodeURIComponent(domain)}`, {
-      headers: {
-        Accept: "application/rdap+json,application/json;q=0.9",
-        "User-Agent": "domain-watch/1.0",
-      },
-      signal: AbortSignal.timeout(15000),
+      headers: { Accept: "application/rdap+json,application/json;q=0.9", "User-Agent": "domain-watch/1.0" },
+      signal: AbortSignal.timeout(12000),
     });
     console.log(`RDAP ${endpoint}${domain} -> HTTP ${res.status}`);
-    if (!res.ok) return { data: null, status: res.status };
+    // 404 = domain not registered (valid response), not an endpoint error
+    if (res.status === 404) return { expiresAt: null, registrar: null };
+    if (!res.ok) return null;
+
     const data = await res.json() as RdapResponse;
-    const eventActions = data.events?.map(e => e.eventAction) ?? [];
-    console.log(`RDAP events: ${JSON.stringify(eventActions)}`);
-    return { data, status: res.status };
+    const expiryKeywords = ["expir", "deletion"];
+    const evt = data.events?.find(e => expiryKeywords.some(k => e.eventAction?.toLowerCase().includes(k)));
+    const expiresAt = evt?.eventDate ?? data.expirationDate ?? null;
+
+    let registrar: string | null = null;
+    const reg = data.entities?.find(e => e.roles?.includes("registrar"));
+    if (reg?.vcardArray) {
+      try {
+        const vcard = reg.vcardArray as unknown[][];
+        const props = Array.isArray(vcard[1]) ? vcard[1] as unknown[] : [];
+        const fn = props.find(v => Array.isArray(v) && (v as unknown[])[0] === "fn");
+        if (Array.isArray(fn) && fn[3]) registrar = String(fn[3]);
+      } catch { /* ignore */ }
+    }
+    if (!registrar && reg?.handle) registrar = reg.handle;
+
+    if (expiresAt) console.log(`RDAP success: ${domain} expires ${expiresAt}`);
+    else console.log(`RDAP 200 but no expiry. Events: ${JSON.stringify(data.events?.map(e => e.eventAction))}`);
+    return { expiresAt, registrar };
   } catch (e) {
-    console.log(`RDAP ${endpoint}${domain} -> ERROR: ${String(e)}`);
-    return { data: null, status: null };
+    console.log(`RDAP ${domain} -> ERROR: ${String(e)}`);
+    return null;
   }
 }
 
-function extractExpiry(data: RdapResponse): string | null {
-  // RDAP event action names vary by registry
-  const expiryKeywords = ["expir", "expiry", "deletion"];
-  const evt = data.events?.find(e =>
-    expiryKeywords.some(k => e.eventAction?.toLowerCase().includes(k))
-  );
-  if (evt?.eventDate) return evt.eventDate;
-  if (data.expirationDate) return data.expirationDate;
-  if (data.events?.length) {
-    console.log(`RDAP: no expiry event. Actions: ${JSON.stringify(data.events.map(e => e.eventAction))}`);
-  }
-  return null;
-}
-
-function extractRegistrar(data: RdapResponse): string | null {
-  const registrarEntity = data.entities?.find(e => e.roles?.includes("registrar"));
-  if (!registrarEntity) return null;
-  if (registrarEntity.vcardArray) {
-    try {
-      const vcard = registrarEntity.vcardArray as unknown[][];
-      const props = Array.isArray(vcard[1]) ? vcard[1] as unknown[] : [];
-      const fnEntry = props.find(v => Array.isArray(v) && (v as unknown[])[0] === "fn");
-      if (Array.isArray(fnEntry) && fnEntry[3]) return String(fnEntry[3]);
-    } catch { /* ignore */ }
-  }
-  return registrarEntity.handle ?? null;
-}
+// ─── Main expiry lookup ───────────────────────────────────────────────────────
 
 export async function lookupDomainExpiry(domain: string): Promise<{
   expiresAt: string | null;
   registrar: string | null;
 }> {
-  const endpoints = getRdapEndpoints(domain);
-  const seen = new Set<string>();
+  // Try WHOIS first (broader TLD support, simpler)
+  const whois = await lookupViaWhoDat(domain);
+  if (whois?.expiresAt) return whois;
 
-  for (const endpoint of endpoints) {
-    if (seen.has(endpoint)) continue;
-    seen.add(endpoint);
+  // Fall back to RDAP
+  const rdap = await lookupViaRdap(domain);
+  if (rdap?.expiresAt) return rdap;
 
-    const { data, status } = await tryRdapEndpoint(endpoint, domain);
-    if (!data || status !== 200) continue;
-
-    const expiresAt = extractExpiry(data);
-    const registrar = extractRegistrar(data);
-    if (expiresAt) {
-      console.log(`RDAP success: ${domain} expires ${expiresAt}`);
-      return { expiresAt, registrar };
-    }
-    // Got 200 but no expiry — log what we received
-    console.log(`RDAP 200 but no expiry for ${domain}. Top-level keys: ${Object.keys(data).join(", ")}`);
-  }
-
-  return { expiresAt: null, registrar: null };
+  // Return whatever partial data we have (registrar without expiry, etc.)
+  return {
+    expiresAt: whois?.expiresAt ?? rdap?.expiresAt ?? null,
+    registrar: whois?.registrar ?? rdap?.registrar ?? null,
+  };
 }
 
 // ─── DNS Existence Check ──────────────────────────────────────────────────────
@@ -180,11 +210,12 @@ export async function checkDomainExists(domain: string): Promise<boolean | null>
   return null;
 }
 
+// Recheck unknowns with small batches and delays
 export async function recheckUnknowns(unknownDomains: string[]): Promise<Map<string, boolean | null>> {
   const results = new Map<string, boolean | null>();
   const batchSize = 5;
   for (let i = 0; i < unknownDomains.length; i += batchSize) {
-    if (i > 0) await sleep(400);
+    if (i > 0) await sleep(500);
     const batch = unknownDomains.slice(i, i + batchSize);
     const checks = await Promise.all(batch.map(async d => ({ d, result: await checkDomainExists(d) })));
     for (const { d, result } of checks) results.set(d, result);
@@ -194,9 +225,7 @@ export async function recheckUnknowns(unknownDomains: string[]): Promise<Map<str
 
 // ─── Fuzzy Variant Generation ────────────────────────────────────────────────
 
-const HOMOGLYPHS: Record<string, string> = {
-  o: "0", l: "1", i: "l", a: "4", e: "3", s: "5", t: "7",
-};
+const HOMOGLYPHS: Record<string, string> = { o:"0",l:"1",i:"l",a:"4",e:"3",s:"5",t:"7" };
 const ADJACENT_KEYS: Record<string, string> = {
   a:"sq",b:"vn",c:"xv",d:"sf",e:"wr",f:"dg",g:"fh",h:"gj",i:"uo",j:"hk",
   k:"jl",l:"k",m:"n",n:"mb",o:"ip",p:"o",q:"wa",r:"et",s:"ad",t:"ry",
@@ -239,7 +268,6 @@ export function generateFuzzyVariants(domain: string, tlds: string[]): Omit<Fuzz
     const ch = label[i].toLowerCase();
     if (HOMOGLYPHS[ch]) add(`${label.slice(0,i)}${HOMOGLYPHS[ch]}${label.slice(i+1)}${baseTld}`, "typo-homoglyph");
   }
-
   return [...variants.values()];
 }
 
@@ -250,9 +278,16 @@ export function daysUntilExpiry(expiresAt: string): number {
 }
 
 export function shouldAlert(domain: MonitoredDomain): number[] {
-  if (!domain.expiresAt) return [];
-  const days = daysUntilExpiry(domain.expiresAt);
-  return domain.alertThresholds.filter(t => days <= t && !domain.alertsSent.includes(t));
+  const effectiveExpiry = domain.expiresAt || domain.manualExpiresAt;
+  if (!effectiveExpiry) return [];
+  const days = daysUntilExpiry(effectiveExpiry);
+  // Only alert on the SINGLE closest threshold not yet sent
+  // (avoids sending multiple alerts for an already-expired domain on first check)
+  const pending = domain.alertThresholds
+    .filter(t => days <= t && !domain.alertsSent.includes(t))
+    .sort((a, b) => a - b); // ascending — smallest threshold first
+  // Return only the closest one
+  return pending.length ? [pending[0]] : [];
 }
 
 function sleep(ms: number): Promise<void> {

@@ -128,11 +128,14 @@ export default {
         };
 
         const toAlert = shouldAlert(updated);
+        // shouldAlert returns at most one threshold per run to avoid burst alerts
         for (const threshold of toAlert) {
           if (!settings.emailTo) continue;
-          const days = updated.expiresAt ? daysUntilExpiry(updated.expiresAt) : 0;
+          const effectiveExpiry = updated.expiresAt || updated.manualExpiresAt;
+          const days = effectiveExpiry ? daysUntilExpiry(effectiveExpiry) : 0;
+          const thresholdLabel = threshold === 0 ? "Expiry day" : `${threshold}-day`;
           const { subject, html, text } = buildExpiryEmail(
-            domain.domain, days, updated.expiresAt!, settings.emailSubjectPrefix
+            domain.domain, days, effectiveExpiry!, settings.emailSubjectPrefix, thresholdLabel
           );
           const result = await sendEmail({ to: settings.emailTo, from: settings.emailFrom, subject, html, text }, env, settings.emailProvider);
           await saveAlert(env, {

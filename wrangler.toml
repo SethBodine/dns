@@ -60,7 +60,8 @@ FUZZY_TLDS = ".com,.net,.org,.io,.co,.ai,.app,.dev,.info,.biz,.co.uk,.co.nz,.com
 # Email (at least one required for alerts):
 #   RESEND_API_KEY        - From resend.com
 #   MAILGUN_API_KEY       - From mailgun.com
-#   MAILGUN_DOMAIN        - Your Mailgun sending domain
+#   MAILGUN_SENDING_DOMAIN - Your Mailgun sending domain (NOTE: use this name, not MAILGUN_DOMAIN
+#                            which Cloudflare may strip as it looks like a config key)
 #   SENDGRID_API_KEY      - From sendgrid.com
 #
 # Email settings (can also be set in UI, stored in KV):
