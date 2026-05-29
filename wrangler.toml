@@ -1,4 +1,4 @@
-name = "domain-watch"
+name = "dns"
 main = "src/worker.ts"
 compatibility_date = "2025-05-26"
 compatibility_flags = ["nodejs_compat"]
