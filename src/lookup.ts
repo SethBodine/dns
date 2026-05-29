@@ -97,7 +97,7 @@ async function lookupViaWhoisJson(domain: string, apiKey?: string): Promise<{ ex
       Accept: "application/json",
       "User-Agent": "domain-watch/1.0",
     };
-    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    if (apiKey) headers["Authorization"] = `TOKEN=${apiKey}`;
 
     const res = await fetch(`https://whoisjson.com/api/v1/whois?domain=${encodeURIComponent(domain)}`, {
       headers,
