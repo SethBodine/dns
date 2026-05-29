@@ -80,14 +80,20 @@ async function lookupViaRdap(domain: string): Promise<{ expiresAt: string | null
 // Works without a key too, but at a much lower rate limit
 
 interface WhoisJsonResponse {
+  // Flat response fields (confirmed from live API)
+  name?: string;
+  expires?: string | null;
+  expiry_date?: string | null;
+  expiration_date?: string | null;
+  registered?: boolean | null;
+  registrar?: { name?: string } | null;
+  // Nested domain object (some endpoints)
   domain?: {
     expiration_date?: string;
     expiry_date?: string;
     expires?: string;
     registrar?: string;
   };
-  registrar?: { name?: string };
-  expiration_date?: string;
   [key: string]: unknown;
 }
 
@@ -99,7 +105,7 @@ async function lookupViaWhoisJson(domain: string, apiKey?: string): Promise<{ ex
     };
     if (apiKey) headers["Authorization"] = `TOKEN=${apiKey}`;
 
-    const res = await fetch(`https://whoisjson.com/api/v1/whois?domain=${encodeURIComponent(domain)}`, {
+    const res = await fetch(`https://whoisjson.com/api/v1/whois/?domain=${encodeURIComponent(domain)}`, {
       headers,
       signal: AbortSignal.timeout(15000),
     });
@@ -111,19 +117,29 @@ async function lookupViaWhoisJson(domain: string, apiKey?: string): Promise<{ ex
     if (!res.ok) return null;
 
     const data = await res.json() as WhoisJsonResponse;
-    // Field names vary by registry — check all common ones
+    // Actual response shape (confirmed): { expires, registered, registrar: { name }, ... }
+    // Some registries (e.g. .co.nz) return expires: null — registry policy, not an error
     const expiresAt =
+      (data.expires as string | null) ??
+      (data.expiry_date as string | null) ??
+      (data.expiration_date as string | null) ??
       data.domain?.expiration_date ??
       data.domain?.expiry_date ??
-      data.domain?.expires ??
-      data.expiration_date as string ?? null;
-
-    const registrar =
-      data.domain?.registrar ??
-      data.registrar?.name ??
       null;
 
-    console.log(`WhoisJSON ${domain}: expiresAt=${expiresAt}, registrar=${registrar}`);
+    const registrar =
+      (data.registrar as { name?: string } | null)?.name ??
+      data.domain?.registrar ??
+      null;
+
+    const registered = data.registered as boolean | null;
+    console.log(`WhoisJSON ${domain}: expires=${expiresAt}, registrar=${registrar}, registered=${registered}`);
+
+    // If domain is registered but expiry is null, the registry doesn't publish it
+    if (registered && !expiresAt) {
+      console.log(`WhoisJSON ${domain}: registered but registry does not publish expiry date (common for ccTLDs like .co.nz)`);
+    }
+
     return { expiresAt: expiresAt || null, registrar: registrar || null };
   } catch (e) {
     console.log(`WhoisJSON error for ${domain}: ${String(e)}`);
