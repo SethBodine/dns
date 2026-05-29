@@ -97,7 +97,7 @@ interface WhoisJsonResponse {
   [key: string]: unknown;
 }
 
-async function lookupViaWhoisJson(domain: string, apiKey?: string): Promise<{ expiresAt: string | null; registrar: string | null } | null> {
+async function lookupViaWhoisJson(domain: string, apiKey?: string): Promise<{ expiresAt: string | null; registrar: string | null; error?: string } | null> {
   try {
     const headers: Record<string, string> = {
       Accept: "application/json",
@@ -110,11 +110,13 @@ async function lookupViaWhoisJson(domain: string, apiKey?: string): Promise<{ ex
       signal: AbortSignal.timeout(15000),
     });
     console.log(`WhoisJSON ${domain} -> HTTP ${res.status}`);
-    if (res.status === 429) {
-      console.log("WhoisJSON rate limited — add WHOIS_API_KEY secret for more capacity");
-      return null;
+    if (!res.ok) {
+      let errBody = '';
+      try { errBody = await res.text(); } catch { /* ignore */ }
+      console.log(`WhoisJSON ${domain} -> HTTP ${res.status} body: ${errBody}`);
+      // Surface the error so the caller can show it in the UI
+      return { expiresAt: null, registrar: null, error: `WhoisJSON HTTP ${res.status}: ${errBody.slice(0, 200)}` };
     }
-    if (!res.ok) return null;
 
     const data = await res.json() as WhoisJsonResponse;
     // Actual response shape (confirmed): { expires, registered, registrar: { name }, ... }
@@ -152,6 +154,7 @@ async function lookupViaWhoisJson(domain: string, apiKey?: string): Promise<{ ex
 export async function lookupDomainExpiry(domain: string, env?: Env): Promise<{
   expiresAt: string | null;
   registrar: string | null;
+  lookupError?: string;
 }> {
   // 1. Check KV cache first
   if (env) {
@@ -177,10 +180,13 @@ export async function lookupDomainExpiry(domain: string, env?: Env): Promise<{
     return whois;
   }
 
-  // Return partial data if we got registrar but no expiry
+  // Surface any WhoisJSON error so the UI can show it
+  const lookupError = whois?.error ?? (rdap === null && whois === null ? 'All lookup methods failed' : undefined);
+
   return {
     expiresAt: null,
     registrar: rdap?.registrar ?? whois?.registrar ?? null,
+    lookupError,
   };
 }
 

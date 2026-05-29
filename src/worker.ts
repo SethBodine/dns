@@ -261,7 +261,7 @@ async function handleAddDomain(request: Request, env: Env, ip: string): Promise<
 
   if (!await checkRateLimit(env, ip, "lookup")) return errorResponse("Lookup rate limit exceeded", 429);
 
-  const { expiresAt, registrar } = await lookupDomainExpiry(domain, env);
+  const { expiresAt, registrar, lookupError } = await lookupDomainExpiry(domain, env);
 
   const newDomain: MonitoredDomain = {
     id: crypto.randomUUID(), domain,
@@ -272,7 +272,7 @@ async function handleAddDomain(request: Request, env: Env, ip: string): Promise<
     alertThresholds: thresholds, alertsSent: [], notes: "",
   };
   await saveDomain(env, newDomain);
-  return jsonResponse(newDomain, 201);
+  return jsonResponse({ ...newDomain, lookupError: lookupError ?? null }, 201);
 }
 
 async function handleDeleteDomain(env: Env, id: string): Promise<Response> {
@@ -329,7 +329,7 @@ async function handleRefreshDomain(env: Env, id: string, ip: string): Promise<Re
   if (!domain) return errorResponse("Domain not found", 404);
   if (!await checkRateLimit(env, ip, "lookup")) return errorResponse("Lookup rate limit exceeded", 429);
 
-  const { expiresAt, registrar } = await lookupDomainExpiry(domain.domain, env);
+  const { expiresAt, registrar, lookupError } = await lookupDomainExpiry(domain.domain, env);
   const updated = {
     ...domain,
     expiresAt: expiresAt ?? domain.expiresAt,
@@ -337,7 +337,7 @@ async function handleRefreshDomain(env: Env, id: string, ip: string): Promise<Re
     lastChecked: new Date().toISOString(),
   };
   await saveDomain(env, updated);
-  return jsonResponse(updated);
+  return jsonResponse({ ...updated, lookupError: lookupError ?? null });
 }
 
 async function handleUpdateThresholds(request: Request, env: Env, id: string): Promise<Response> {
